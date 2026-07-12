@@ -1,0 +1,2 @@
+# LoreDesktopAndWebSystem
+LoreのGUI操作ができるアプリケーション及びwebサービスの開発を目的としたリポジトリ
