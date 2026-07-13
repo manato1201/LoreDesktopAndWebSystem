@@ -8,3 +8,23 @@ export type Repository = {
   lockedFileCount: number;
   visibility: "private" | "internal" | "public";
 };
+
+export type FileKind = "text" | "image" | "model3d" | "audio" | "binary";
+
+export type DirectoryTreeNode = {
+  kind: "directory";
+  path: string;
+  name: string;
+  children: TreeNode[];
+};
+
+export type FileTreeNode = {
+  kind: FileKind;
+  path: string;
+  name: string;
+  sizeLabel: string;
+  updatedAt: string;
+  lockedBy: string | null;
+};
+
+export type TreeNode = DirectoryTreeNode | FileTreeNode;
