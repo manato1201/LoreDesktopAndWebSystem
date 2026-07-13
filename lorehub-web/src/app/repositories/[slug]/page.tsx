@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/PageHeader";
-import { PlaceholderScreen } from "@/components/PlaceholderScreen";
-import { RepositoryIcon } from "@/components/icons";
+import { RepositoryExplorer } from "@/components/RepositoryExplorer";
 import { mockRepositories } from "@/lib/mock-data";
+import { mockTree } from "@/lib/mock-tree";
 
 export function generateStaticParams() {
   return mockRepositories.map((repo) => ({ slug: repo.slug }));
@@ -24,11 +24,7 @@ export default async function RepositoryDetailPage(
         title={repository.name}
         subtitle={`${repository.organization} · ${repository.sizeLabel} · Updated ${repository.updatedAt}`}
       />
-      <PlaceholderScreen
-        icon={RepositoryIcon}
-        title="File tree & chunk-streaming preview are coming next"
-        description="Sparse workspace browsing and the lock-aware file tree will land here. See LOREHUB_UI_SPEC.md §1 (screen 2-3) for the planned layout."
-      />
+      <RepositoryExplorer tree={mockTree} />
     </>
   );
 }
