@@ -1,4 +1,5 @@
 mod handlers;
+mod image_assets;
 mod models;
 mod state;
 
@@ -35,6 +36,14 @@ async fn main() {
         .route(
             "/api/repositories/{slug}/content/{*path}",
             get(handlers::get_file_content),
+        )
+        .route(
+            "/api/repositories/{slug}/image/{*path}",
+            get(handlers::get_image),
+        )
+        .route(
+            "/api/repositories/{slug}/image-before/{*path}",
+            get(handlers::get_image_before),
         )
         .route(
             "/api/repositories/{slug}/commits",

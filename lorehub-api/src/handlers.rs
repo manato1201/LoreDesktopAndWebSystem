@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -43,6 +43,38 @@ pub async fn get_file_content(
     match state.file_contents.get(&path) {
         Some(content) => Json(serde_json::json!({ "content": content })).into_response(),
         None => not_found("no text content for this file"),
+    }
+}
+
+fn svg_response(svg: &str) -> Response {
+    ([(header::CONTENT_TYPE, "image/svg+xml")], svg.to_string()).into_response()
+}
+
+pub async fn get_image(
+    State(state): State<SharedState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let state = state.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    match state.image_content.get(&path) {
+        Some(svg) => svg_response(svg),
+        None => not_found("no image content for this file"),
+    }
+}
+
+pub async fn get_image_before(
+    State(state): State<SharedState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let state = state.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    match state.image_content_before.get(&path) {
+        Some(svg) => svg_response(svg),
+        None => not_found("no 'before' image for this file"),
     }
 }
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::image_assets;
 use crate::models::*;
 
 pub type SharedState = Arc<RwLock<AppState>>;
@@ -11,6 +12,8 @@ pub struct AppState {
     pub repositories: Vec<Repository>,
     pub tree: Vec<TreeNode>,
     pub file_contents: HashMap<String, String>,
+    pub image_content: HashMap<String, String>,
+    pub image_content_before: HashMap<String, String>,
     pub commits: Vec<Commit>,
     pub branches: Vec<Branch>,
     pub pull_requests: Vec<PullRequest>,
@@ -613,10 +616,28 @@ pub fn seed() -> AppState {
         "# Hollow Keep\n\nEnvironment art, terrain chunks, and lighting scenarios.\n\nRun `lore sync Assets/Environments` for a sparse checkout.\n".to_string(),
     );
 
+    let mut image_content = HashMap::new();
+    image_content.insert(
+        "Assets/Characters/hero_diffuse.png".to_string(),
+        image_assets::HERO_DIFFUSE_AFTER.to_string(),
+    );
+    image_content.insert(
+        "Assets/Environments/skybox_dusk.png".to_string(),
+        image_assets::SKYBOX_DUSK_AFTER.to_string(),
+    );
+
+    let mut image_content_before = HashMap::new();
+    image_content_before.insert(
+        "Assets/Characters/hero_diffuse.png".to_string(),
+        image_assets::HERO_DIFFUSE_BEFORE.to_string(),
+    );
+
     AppState {
         repositories,
         tree,
         file_contents,
+        image_content,
+        image_content_before,
         commits,
         branches,
         pull_requests,
