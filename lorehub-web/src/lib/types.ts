@@ -90,3 +90,29 @@ export type PullRequest = {
   changedFiles: PRDiffFile[];
   comments: PRComment[];
 };
+
+export type PermissionLevel = "read" | "write" | "lock";
+
+export type AccessEntry = {
+  principal: string;
+  principalType: "user" | "team";
+  permissions: PermissionLevel[];
+};
+
+export type MemberRole = "owner" | "admin" | "member";
+
+export type OrgMember = {
+  name: string;
+  initials: string;
+  email: string;
+  role: MemberRole;
+  joinedAt: string;
+};
+
+export type AuditLogEntry = {
+  id: string;
+  actor: string;
+  action: string;
+  target: string;
+  timestamp: string;
+};
