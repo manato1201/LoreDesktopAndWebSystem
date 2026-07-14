@@ -1,0 +1,561 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+
+use crate::models::*;
+
+pub type SharedState = Arc<RwLock<AppState>>;
+
+pub struct AppState {
+    pub repositories: Vec<Repository>,
+    pub tree: Vec<TreeNode>,
+    pub commits: Vec<Commit>,
+    pub pull_requests: Vec<PullRequest>,
+    pub access_entries: HashMap<String, Vec<AccessEntry>>,
+    pub org_members: Vec<OrgMember>,
+    pub storage: StorageUsage,
+    pub audit_log: Vec<AuditLogEntry>,
+}
+
+impl AppState {
+    pub fn record_audit(&mut self, actor: &str, action: &str, target: &str) {
+        self.audit_log.insert(
+            0,
+            AuditLogEntry {
+                id: format!("a{}", self.audit_log.len() + 1),
+                actor: actor.to_string(),
+                action: action.to_string(),
+                target: target.to_string(),
+                timestamp: "just now".to_string(),
+            },
+        );
+    }
+
+    /// Recursively sets `lockedBy` on the node at `path`. Returns `true` if
+    /// a matching node was found.
+    pub fn set_lock(&mut self, path: &str, locked_by: Option<String>) -> bool {
+        fn walk(nodes: &mut [TreeNode], path: &str, locked_by: &Option<String>) -> bool {
+            for node in nodes.iter_mut() {
+                if node.path() == path {
+                    match node {
+                        TreeNode::Text { locked_by: lb, .. }
+                        | TreeNode::Image { locked_by: lb, .. }
+                        | TreeNode::Model3d { locked_by: lb, .. }
+                        | TreeNode::Audio { locked_by: lb, .. }
+                        | TreeNode::Binary { locked_by: lb, .. } => {
+                            *lb = locked_by.clone();
+                            return true;
+                        }
+                        TreeNode::Directory { .. } => return false,
+                    }
+                }
+                if let TreeNode::Directory { children, .. } = node
+                    && walk(children, path, locked_by)
+                {
+                    return true;
+                }
+            }
+            false
+        }
+
+        walk(&mut self.tree, path, &locked_by)
+    }
+}
+
+pub fn seed() -> AppState {
+    let repositories = vec![
+        Repository {
+            slug: "starforge-vfx".into(),
+            name: "starforge-vfx".into(),
+            organization: "Nebula Studios".into(),
+            description: "Particle FX library and Niagara modules for the Starforge campaign."
+                .into(),
+            updated_at: "2h ago".into(),
+            size_label: "184 GB".into(),
+            locked_file_count: 3,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "hollow-keep-env".into(),
+            name: "hollow-keep-env".into(),
+            organization: "Nebula Studios".into(),
+            description: "Environment art, terrain chunks, and lighting scenarios for Hollow Keep."
+                .into(),
+            updated_at: "6h ago".into(),
+            size_label: "512 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "character-rigs".into(),
+            name: "character-rigs".into(),
+            organization: "Nebula Studios".into(),
+            description: "Shared character skeletons, rigs, and animation retarget presets.".into(),
+            updated_at: "1d ago".into(),
+            size_label: "76 GB".into(),
+            locked_file_count: 1,
+            visibility: Visibility::Internal,
+        },
+        Repository {
+            slug: "audio-master".into(),
+            name: "audio-master".into(),
+            organization: "Nebula Studios".into(),
+            description: "Master audio sessions, foley captures, and mix stems.".into(),
+            updated_at: "2d ago".into(),
+            size_label: "212 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "cinematics-s2".into(),
+            name: "cinematics-s2".into(),
+            organization: "Nebula Studios".into(),
+            description: "Season 2 cinematic sequences, previs, and camera capture data.".into(),
+            updated_at: "3d ago".into(),
+            size_label: "1.1 TB".into(),
+            locked_file_count: 5,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "shared-materials".into(),
+            name: "shared-materials".into(),
+            organization: "Nebula Studios".into(),
+            description: "Cross-project material library, substance graphs, and texture sets."
+                .into(),
+            updated_at: "5d ago".into(),
+            size_label: "98 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Public,
+        },
+    ];
+
+    let tree = vec![
+        TreeNode::Directory {
+            path: "Assets".into(),
+            name: "Assets".into(),
+            children: vec![
+                TreeNode::Directory {
+                    path: "Assets/Characters".into(),
+                    name: "Characters".into(),
+                    children: vec![
+                        TreeNode::Model3d {
+                            path: "Assets/Characters/hero_rig.fbx".into(),
+                            name: "hero_rig.fbx".into(),
+                            size_label: "42.1 MB".into(),
+                            updated_at: "2h ago".into(),
+                            locked_by: Some("Aiko Tanaka".into()),
+                        },
+                        TreeNode::Image {
+                            path: "Assets/Characters/hero_diffuse.png".into(),
+                            name: "hero_diffuse.png".into(),
+                            size_label: "18.4 MB".into(),
+                            updated_at: "1d ago".into(),
+                            locked_by: None,
+                        },
+                    ],
+                },
+                TreeNode::Directory {
+                    path: "Assets/Environments".into(),
+                    name: "Environments".into(),
+                    children: vec![
+                        TreeNode::Binary {
+                            path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
+                            name: "hollow_keep_terrain.uasset".into(),
+                            size_label: "1.2 GB".into(),
+                            updated_at: "6h ago".into(),
+                            locked_by: None,
+                        },
+                        TreeNode::Image {
+                            path: "Assets/Environments/skybox_dusk.png".into(),
+                            name: "skybox_dusk.png".into(),
+                            size_label: "64.0 MB".into(),
+                            updated_at: "3d ago".into(),
+                            locked_by: None,
+                        },
+                    ],
+                },
+                TreeNode::Directory {
+                    path: "Assets/Audio".into(),
+                    name: "Audio".into(),
+                    children: vec![TreeNode::Audio {
+                        path: "Assets/Audio/theme_main.wav".into(),
+                        name: "theme_main.wav".into(),
+                        size_label: "96.3 MB".into(),
+                        updated_at: "5d ago".into(),
+                        locked_by: Some("Marco Silva".into()),
+                    }],
+                },
+            ],
+        },
+        TreeNode::Directory {
+            path: "Source".into(),
+            name: "Source".into(),
+            children: vec![
+                TreeNode::Text {
+                    path: "Source/Game.cpp".into(),
+                    name: "Game.cpp".into(),
+                    size_label: "12.8 KB".into(),
+                    updated_at: "2h ago".into(),
+                    locked_by: None,
+                },
+                TreeNode::Text {
+                    path: "Source/Game.h".into(),
+                    name: "Game.h".into(),
+                    size_label: "3.1 KB".into(),
+                    updated_at: "2h ago".into(),
+                    locked_by: None,
+                },
+            ],
+        },
+        TreeNode::Text {
+            path: "README.md".into(),
+            name: "README.md".into(),
+            size_label: "2.4 KB".into(),
+            updated_at: "1w ago".into(),
+            locked_by: None,
+        },
+    ];
+
+    let commits = vec![
+        Commit {
+            hash: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
+            short_hash: "a1c4e7f".into(),
+            message: "Retarget hero rig to updated skeleton".into(),
+            description: None,
+            author: "Aiko Tanaka".into(),
+            author_initials: "AT".into(),
+            timestamp: "2h ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Characters/hero_rig.fbx".into(),
+                change_type: FileChangeType::Modified,
+                size_delta_label: "+1.2 MB".into(),
+            }],
+        },
+        Commit {
+            hash: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
+            short_hash: "7d2b9c1".into(),
+            message: "Add dusk skybox for Hollow Keep exteriors".into(),
+            description: None,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            timestamp: "6h ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Environments/skybox_dusk.png".into(),
+                change_type: FileChangeType::Added,
+                size_delta_label: "+64.0 MB".into(),
+            }],
+        },
+        Commit {
+            hash: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
+            short_hash: "e5f8a1b".into(),
+            message: "Fix world tick order for late-joining actors".into(),
+            description: Some(
+                "Renderer.Submit was picking up stale draw calls when actors joined mid-tick."
+                    .into(),
+            ),
+            author: "Priya Desai".into(),
+            author_initials: "PD".into(),
+            timestamp: "1d ago".into(),
+            changed_files: vec![
+                FileChange {
+                    path: "Source/Game.cpp".into(),
+                    change_type: FileChangeType::Modified,
+                    size_delta_label: "+0.4 KB".into(),
+                },
+                FileChange {
+                    path: "Source/Game.h".into(),
+                    change_type: FileChangeType::Modified,
+                    size_delta_label: "±0 B".into(),
+                },
+            ],
+        },
+        Commit {
+            hash: "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
+            short_hash: "3c6d9e2".into(),
+            message: "Remove deprecated terrain LOD tier".into(),
+            description: None,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            timestamp: "2d ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
+                change_type: FileChangeType::Modified,
+                size_delta_label: "-320.0 MB".into(),
+            }],
+        },
+        Commit {
+            hash: "9b1e4f7a0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f".into(),
+            short_hash: "9b1e4f7".into(),
+            message: "Record updated main theme mix".into(),
+            description: None,
+            author: "Priya Desai".into(),
+            author_initials: "PD".into(),
+            timestamp: "5d ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Audio/theme_main.wav".into(),
+                change_type: FileChangeType::Modified,
+                size_delta_label: "+3.1 MB".into(),
+            }],
+        },
+        Commit {
+            hash: "0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into(),
+            short_hash: "0f4a7b0".into(),
+            message: "Document sparse checkout workflow".into(),
+            description: None,
+            author: "Aiko Tanaka".into(),
+            author_initials: "AT".into(),
+            timestamp: "1w ago".into(),
+            changed_files: vec![FileChange {
+                path: "README.md".into(),
+                change_type: FileChangeType::Modified,
+                size_delta_label: "+0.6 KB".into(),
+            }],
+        },
+    ];
+
+    let pull_requests = vec![
+        PullRequest {
+            id: "42".into(),
+            title: "Retarget hero rig to updated skeleton".into(),
+            description: "Reworks the hero rig's bone hierarchy to match the new mocap skeleton. Also swaps the diffuse texture for the higher-resolution pass.".into(),
+            repo_slug: "hollow-keep-env".into(),
+            repo_name: "hollow-keep-env".into(),
+            status: PrStatus::Open,
+            author: "Aiko Tanaka".into(),
+            author_initials: "AT".into(),
+            created_at: "3h ago".into(),
+            updated_at: "1h ago".into(),
+            changed_files: vec![
+                PrDiffFile::Text {
+                    path: "Source/Game.cpp".into(),
+                    change_type: FileChangeType::Modified,
+                    lines: vec![
+                        DiffLine { kind: DiffLineType::Context, text: "void Game::Tick(float deltaSeconds)".into() },
+                        DiffLine { kind: DiffLineType::Context, text: "{".into() },
+                        DiffLine { kind: DiffLineType::Remove, text: "    World.Update(deltaSeconds);".into() },
+                        DiffLine { kind: DiffLineType::Add, text: "    World.Update(deltaSeconds * TimeScale);".into() },
+                        DiffLine { kind: DiffLineType::Add, text: "    World.FlushPendingLocks();".into() },
+                        DiffLine { kind: DiffLineType::Context, text: "    Renderer.Submit(World.GetDrawCalls());".into() },
+                        DiffLine { kind: DiffLineType::Context, text: "}".into() },
+                    ],
+                },
+                PrDiffFile::Model3d {
+                    path: "Assets/Characters/hero_rig.fbx".into(),
+                    change_type: FileChangeType::Modified,
+                },
+                PrDiffFile::Image {
+                    path: "Assets/Characters/hero_diffuse.png".into(),
+                    change_type: FileChangeType::Modified,
+                },
+            ],
+            comments: vec![PrComment {
+                id: "c1".into(),
+                author: "Marco Silva".into(),
+                author_initials: "MS".into(),
+                timestamp: "50m ago".into(),
+                body: "Rig deformation on the left shoulder looks correct now. Diffuse pass is a nice upgrade.".into(),
+            }],
+        },
+        PullRequest {
+            id: "39".into(),
+            title: "Add dusk skybox for Hollow Keep exteriors".into(),
+            description: "New skybox pass for the exterior courtyard scenes. Replaces the placeholder gradient sky.".into(),
+            repo_slug: "hollow-keep-env".into(),
+            repo_name: "hollow-keep-env".into(),
+            status: PrStatus::Merged,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            created_at: "2d ago".into(),
+            updated_at: "1d ago".into(),
+            changed_files: vec![PrDiffFile::Image {
+                path: "Assets/Environments/skybox_dusk.png".into(),
+                change_type: FileChangeType::Added,
+            }],
+            comments: vec![PrComment {
+                id: "c2".into(),
+                author: "Priya Desai".into(),
+                author_initials: "PD".into(),
+                timestamp: "1d ago".into(),
+                body: "Color grading matches the reference board. Merging.".into(),
+            }],
+        },
+        PullRequest {
+            id: "35".into(),
+            title: "Revert oversized terrain LOD experiment".into(),
+            description: "The experimental LOD tier regressed streaming performance on the courtyard level. Reverting until the chunking strategy is revisited.".into(),
+            repo_slug: "hollow-keep-env".into(),
+            repo_name: "hollow-keep-env".into(),
+            status: PrStatus::Closed,
+            author: "Priya Desai".into(),
+            author_initials: "PD".into(),
+            created_at: "5d ago".into(),
+            updated_at: "4d ago".into(),
+            changed_files: vec![PrDiffFile::Text {
+                path: "README.md".into(),
+                change_type: FileChangeType::Modified,
+                lines: vec![
+                    DiffLine { kind: DiffLineType::Context, text: "## Terrain LOD".into() },
+                    DiffLine { kind: DiffLineType::Remove, text: "Experimental 5-tier LOD is enabled by default.".into() },
+                    DiffLine { kind: DiffLineType::Add, text: "LOD stays at the standard 3-tier setup for now.".into() },
+                ],
+            }],
+            comments: vec![],
+        },
+    ];
+
+    let mut access_entries = HashMap::new();
+    access_entries.insert(
+        "Assets".to_string(),
+        vec![
+            AccessEntry {
+                principal: "Environment Artists".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![PermissionLevel::Read, PermissionLevel::Write],
+            },
+            AccessEntry {
+                principal: "Character Artists".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![PermissionLevel::Read, PermissionLevel::Write],
+            },
+            AccessEntry {
+                principal: "QA Contractors".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![PermissionLevel::Read],
+            },
+        ],
+    );
+    access_entries.insert(
+        "Assets/Characters".to_string(),
+        vec![
+            AccessEntry {
+                principal: "Character Artists".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![
+                    PermissionLevel::Read,
+                    PermissionLevel::Write,
+                    PermissionLevel::Lock,
+                ],
+            },
+            AccessEntry {
+                principal: "Aiko Tanaka".into(),
+                principal_type: PrincipalType::User,
+                permissions: vec![
+                    PermissionLevel::Read,
+                    PermissionLevel::Write,
+                    PermissionLevel::Lock,
+                ],
+            },
+        ],
+    );
+    access_entries.insert(
+        "Assets/Environments".to_string(),
+        vec![AccessEntry {
+            principal: "Environment Artists".into(),
+            principal_type: PrincipalType::Team,
+            permissions: vec![
+                PermissionLevel::Read,
+                PermissionLevel::Write,
+                PermissionLevel::Lock,
+            ],
+        }],
+    );
+    access_entries.insert(
+        "Source".to_string(),
+        vec![
+            AccessEntry {
+                principal: "Engineering".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![
+                    PermissionLevel::Read,
+                    PermissionLevel::Write,
+                    PermissionLevel::Lock,
+                ],
+            },
+            AccessEntry {
+                principal: "QA Contractors".into(),
+                principal_type: PrincipalType::Team,
+                permissions: vec![PermissionLevel::Read],
+            },
+        ],
+    );
+
+    let org_members = vec![
+        OrgMember {
+            name: "Aiko Tanaka".into(),
+            initials: "AT".into(),
+            email: "aiko.tanaka@nebula.studio".into(),
+            role: MemberRole::Owner,
+            joined_at: "Jan 2023".into(),
+        },
+        OrgMember {
+            name: "Marco Silva".into(),
+            initials: "MS".into(),
+            email: "marco.silva@nebula.studio".into(),
+            role: MemberRole::Admin,
+            joined_at: "Mar 2023".into(),
+        },
+        OrgMember {
+            name: "Priya Desai".into(),
+            initials: "PD".into(),
+            email: "priya.desai@nebula.studio".into(),
+            role: MemberRole::Member,
+            joined_at: "Aug 2023".into(),
+        },
+        OrgMember {
+            name: "Diego Fernandez".into(),
+            initials: "DF".into(),
+            email: "diego.fernandez@nebula.studio".into(),
+            role: MemberRole::Member,
+            joined_at: "Nov 2024".into(),
+        },
+    ];
+
+    let storage = StorageUsage {
+        used_label: "2.18 TB".into(),
+        total_label: "5 TB".into(),
+        used_percent: 44,
+    };
+
+    let audit_log = vec![
+        AuditLogEntry {
+            id: "a1".into(),
+            actor: "Aiko Tanaka".into(),
+            action: "locked".into(),
+            target: "Assets/Characters/hero_rig.fbx".into(),
+            timestamp: "2h ago".into(),
+        },
+        AuditLogEntry {
+            id: "a2".into(),
+            actor: "Marco Silva".into(),
+            action: "merged pull request #39 into".into(),
+            target: "hollow-keep-env".into(),
+            timestamp: "1d ago".into(),
+        },
+        AuditLogEntry {
+            id: "a3".into(),
+            actor: "Priya Desai".into(),
+            action: "updated permissions on".into(),
+            target: "Source".into(),
+            timestamp: "3d ago".into(),
+        },
+        AuditLogEntry {
+            id: "a4".into(),
+            actor: "Aiko Tanaka".into(),
+            action: "invited".into(),
+            target: "diego.fernandez@nebula.studio".into(),
+            timestamp: "8mo ago".into(),
+        },
+    ];
+
+    AppState {
+        repositories,
+        tree,
+        commits,
+        pull_requests,
+        access_entries,
+        org_members,
+        storage,
+        audit_log,
+    }
+}
