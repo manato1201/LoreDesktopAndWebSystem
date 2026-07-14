@@ -1,37 +1,36 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { mockFileContents } from "@/lib/mock-tree";
+import { useState } from "react";
+import { toggleLock } from "@/lib/api";
 import type { TreeNode } from "@/lib/types";
-import { findNode, withLockOverrides } from "@/lib/tree-utils";
+import { findNode } from "@/lib/tree-utils";
 import { FileDetail } from "./FileDetail";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { RepositoryIcon } from "./icons";
 import { TreeView } from "./TreeView";
 
-export function RepositoryExplorer({ tree }: { tree: TreeNode[] }) {
+export function RepositoryExplorer({
+  repoSlug,
+  tree: initialTree,
+}: {
+  repoSlug: string;
+  tree: TreeNode[];
+}) {
+  const [tree, setTree] = useState(initialTree);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [lockOverrides, setLockOverrides] = useState<
-    Record<string, string | null>
-  >({});
 
-  const effectiveTree = useMemo(
-    () => withLockOverrides(tree, lockOverrides),
-    [tree, lockOverrides],
-  );
-
-  const selectedNode = selectedPath
-    ? findNode(effectiveTree, selectedPath)
-    : undefined;
+  const selectedNode = selectedPath ? findNode(tree, selectedPath) : undefined;
   const selectedFile =
     selectedNode && selectedNode.kind !== "directory" ? selectedNode : null;
 
-  const handleToggleLock = () => {
+  const handleToggleLock = async () => {
     if (!selectedFile) return;
-    setLockOverrides((prev) => ({
-      ...prev,
-      [selectedFile.path]: selectedFile.lockedBy ? null : "You",
-    }));
+    const updated = await toggleLock(
+      repoSlug,
+      selectedFile.path,
+      !selectedFile.lockedBy,
+    );
+    if (updated) setTree(updated);
   };
 
   return (
@@ -42,7 +41,7 @@ export function RepositoryExplorer({ tree }: { tree: TreeNode[] }) {
         }`}
       >
         <TreeView
-          nodes={effectiveTree}
+          nodes={tree}
           selectedPath={selectedPath}
           onSelect={setSelectedPath}
         />
@@ -63,8 +62,8 @@ export function RepositoryExplorer({ tree }: { tree: TreeNode[] }) {
               ← Back to file tree
             </button>
             <FileDetail
+              repoSlug={repoSlug}
               node={selectedFile}
-              content={mockFileContents[selectedFile.path]}
               onToggleLock={handleToggleLock}
             />
           </>

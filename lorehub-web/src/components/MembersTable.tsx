@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { updateMemberRole } from "@/lib/api";
 import type { MemberRole, OrgMember } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
 
@@ -13,12 +14,13 @@ export function MembersTable({
 }) {
   const [members, setMembers] = useState(initialMembers);
 
-  const setRole = (email: string, role: MemberRole) => {
-    setMembers((prev) =>
-      prev.map((member) =>
-        member.email === email ? { ...member, role } : member,
-      ),
-    );
+  const setRole = async (email: string, role: MemberRole) => {
+    const updated = await updateMemberRole(email, role);
+    if (updated) {
+      setMembers((prev) =>
+        prev.map((member) => (member.email === email ? updated : member)),
+      );
+    }
   };
 
   return (

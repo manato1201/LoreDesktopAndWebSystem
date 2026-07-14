@@ -1,9 +1,8 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { AccessControlExplorer } from "@/components/AccessControlExplorer";
 import { PageHeader } from "@/components/PageHeader";
-import { mockAccessEntries } from "@/lib/mock-access-control";
-import { mockRepositories } from "@/lib/mock-data";
-import { mockTree } from "@/lib/mock-tree";
+import { getAccessEntries, getRepositories, getTree } from "@/lib/api";
 import { directoriesOnly } from "@/lib/tree-utils";
 
 export const metadata = { title: "Access Control · LoreHub" };
@@ -13,11 +12,23 @@ export default async function AccessControlPage(
 ) {
   const params = await props.searchParams;
   const rawRepo = Array.isArray(params.repo) ? params.repo[0] : params.repo;
-  const repository =
-    mockRepositories.find((repo) => repo.slug === rawRepo) ??
-    mockRepositories[0];
 
-  const directories = directoriesOnly(mockTree);
+  const repositories = await getRepositories();
+  const repository =
+    repositories.find((repo) => repo.slug === rawRepo) ?? repositories[0];
+
+  if (!repository) {
+    notFound();
+  }
+
+  const [tree, entries] = await Promise.all([
+    getTree(repository.slug),
+    getAccessEntries(),
+  ]);
+  if (!tree) {
+    notFound();
+  }
+  const directories = directoriesOnly(tree);
 
   return (
     <>
@@ -31,7 +42,7 @@ export default async function AccessControlPage(
         aria-label="Select repository"
         className="mb-6 flex flex-wrap gap-1 border-b border-border/40"
       >
-        {mockRepositories.map((repo) => {
+        {repositories.map((repo) => {
           const isActive = repo.slug === repository.slug;
           return (
             <Link
@@ -54,7 +65,7 @@ export default async function AccessControlPage(
       <AccessControlExplorer
         key={repository.slug}
         directories={directories}
-        initialEntries={mockAccessEntries}
+        initialEntries={entries}
       />
     </>
   );

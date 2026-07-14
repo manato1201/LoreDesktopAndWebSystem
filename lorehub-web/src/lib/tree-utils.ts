@@ -26,18 +26,3 @@ export function directoriesOnly(nodes: TreeNode[]): PureDirectoryNode[] {
     .filter((node): node is DirectoryTreeNode => node.kind === "directory")
     .map((node) => ({ ...node, children: directoriesOnly(node.children) }));
 }
-
-export function withLockOverrides(
-  nodes: TreeNode[],
-  overrides: Record<string, string | null>,
-): TreeNode[] {
-  return nodes.map((node) => {
-    if (node.kind === "directory") {
-      return { ...node, children: withLockOverrides(node.children, overrides) };
-    }
-    if (node.path in overrides) {
-      return { ...node, lockedBy: overrides[node.path] };
-    }
-    return node;
-  });
-}

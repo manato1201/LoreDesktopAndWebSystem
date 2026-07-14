@@ -5,17 +5,13 @@ import { CommentThread } from "@/components/CommentThread";
 import { DiffFileViewer } from "@/components/DiffFileViewer";
 import { PageHeader } from "@/components/PageHeader";
 import { PRStatusPill } from "@/components/PRStatusPill";
-import { mockPullRequests } from "@/lib/mock-pull-requests";
-
-export function generateStaticParams() {
-  return mockPullRequests.map((pr) => ({ id: pr.id }));
-}
+import { getPullRequest } from "@/lib/api";
 
 export default async function PullRequestDetailPage(
   props: PageProps<"/pulls/[id]">,
 ) {
   const { id } = await props.params;
-  const pullRequest = mockPullRequests.find((pr) => pr.id === id);
+  const pullRequest = await getPullRequest(id);
 
   if (!pullRequest) {
     notFound();
@@ -71,7 +67,10 @@ export default async function PullRequestDetailPage(
           </div>
         </div>
 
-        <CommentThread initialComments={pullRequest.comments} />
+        <CommentThread
+          pullRequestId={pullRequest.id}
+          initialComments={pullRequest.comments}
+        />
       </div>
     </>
   );

@@ -2,11 +2,17 @@ import { AuditLogList } from "@/components/AuditLogList";
 import { MembersTable } from "@/components/MembersTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StorageUsageCard } from "@/components/StorageUsageCard";
-import { mockAuditLog, mockMembers, mockStorageUsage } from "@/lib/mock-org";
+import { getAuditLog, getMembers, getStorage } from "@/lib/api";
 
 export const metadata = { title: "Settings · LoreHub" };
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const [members, storage, auditLog] = await Promise.all([
+    getMembers(),
+    getStorage(),
+    getAuditLog(),
+  ]);
+
   return (
     <>
       <PageHeader title="Organization Settings" subtitle="Nebula Studios" />
@@ -16,7 +22,7 @@ export default function SettingsPage() {
           <h2 className="mb-3 text-sm font-semibold text-text-secondary">
             Members
           </h2>
-          <MembersTable initialMembers={mockMembers} />
+          <MembersTable initialMembers={members} />
         </section>
 
         <section>
@@ -24,9 +30,9 @@ export default function SettingsPage() {
             Storage
           </h2>
           <StorageUsageCard
-            usedLabel={mockStorageUsage.usedLabel}
-            totalLabel={mockStorageUsage.totalLabel}
-            usedPercent={mockStorageUsage.usedPercent}
+            usedLabel={storage.usedLabel}
+            totalLabel={storage.totalLabel}
+            usedPercent={storage.usedPercent}
           />
         </section>
 
@@ -34,7 +40,7 @@ export default function SettingsPage() {
           <h2 className="mb-3 text-sm font-semibold text-text-secondary">
             Audit Log
           </h2>
-          <AuditLogList entries={mockAuditLog} />
+          <AuditLogList entries={auditLog} />
         </section>
       </div>
     </>
