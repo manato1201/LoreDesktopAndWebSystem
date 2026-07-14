@@ -95,6 +95,14 @@ pub async fn list_commits(State(state): State<SharedState>, Path(slug): Path<Str
     Json(state.commits.clone()).into_response()
 }
 
+pub async fn list_branches(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let state = state.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    Json(state.branches.clone()).into_response()
+}
+
 pub async fn get_commit(
     State(state): State<SharedState>,
     Path((slug, hash)): Path<(String, String)>,
