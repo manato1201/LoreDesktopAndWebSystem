@@ -16,7 +16,10 @@ import type {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}${path}`, {
+    cache: "no-store",
+    credentials: "include",
+  });
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
   }
@@ -24,8 +27,11 @@ async function apiGet<T>(path: string): Promise<T> {
 }
 
 async function apiGetOrNull<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
-  if (res.status === 404) return null;
+  const res = await fetch(`${API_BASE}${path}`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
   }
@@ -42,8 +48,9 @@ async function apiSend<T>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     cache: "no-store",
+    credentials: "include",
   });
-  if (res.status === 404) return null;
+  if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
     throw new Error(`${method} ${path} failed: ${res.status}`);
   }
@@ -154,4 +161,38 @@ export function getStorage(): Promise<StorageUsage> {
 
 export function getAuditLog(): Promise<AuditLogEntry[]> {
   return apiGet("/api/org/audit-log");
+}
+
+export async function getCurrentUser(): Promise<OrgMember | null> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<OrgMember>;
+}
+
+export async function login(
+  email: string,
+  password: string,
+): Promise<{ ok: true; user: OrgMember } | { ok: false; error: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}) as { error?: string });
+    return { ok: false, error: body.error ?? "Login failed" };
+  }
+  const data = (await res.json()) as { user: OrgMember };
+  return { ok: true, user: data.user };
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/api/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
 }
