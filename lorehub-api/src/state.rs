@@ -14,6 +14,7 @@ pub struct AppState {
     pub file_contents: HashMap<String, String>,
     pub image_content: HashMap<String, String>,
     pub image_content_before: HashMap<String, String>,
+    pub audio_content: HashMap<String, Vec<u8>>,
     pub commits: Vec<Commit>,
     pub branches: Vec<Branch>,
     pub pull_requests: Vec<PullRequest>,
@@ -632,12 +633,19 @@ pub fn seed() -> AppState {
         image_assets::HERO_DIFFUSE_BEFORE.to_string(),
     );
 
+    let mut audio_content = HashMap::new();
+    audio_content.insert(
+        "Assets/Audio/theme_main.wav".to_string(),
+        generate_theme_wav(),
+    );
+
     AppState {
         repositories,
         tree,
         file_contents,
         image_content,
         image_content_before,
+        audio_content,
         commits,
         branches,
         pull_requests,
@@ -646,4 +654,47 @@ pub fn seed() -> AppState {
         storage,
         audit_log,
     }
+}
+
+/// Synthesizes a short mono 16-bit PCM WAV clip (a decaying sine-wave
+/// arpeggio) since there is no real audio asset to stream. Pure std, no
+/// audio crate needed.
+fn generate_theme_wav() -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 22_050;
+    const NOTE_SECONDS: f32 = 0.5;
+    const NOTES_HZ: [f32; 6] = [261.63, 329.63, 392.00, 523.25, 392.00, 329.63];
+
+    let note_samples = (SAMPLE_RATE as f32 * NOTE_SECONDS) as usize;
+    let mut samples: Vec<i16> = Vec::with_capacity(note_samples * NOTES_HZ.len());
+
+    for &freq in &NOTES_HZ {
+        for n in 0..note_samples {
+            let t = n as f32 / SAMPLE_RATE as f32;
+            let envelope = (-t * 3.0).exp();
+            let value = (t * freq * std::f32::consts::TAU).sin() * envelope * 0.3;
+            samples.push((value * i16::MAX as f32) as i16);
+        }
+    }
+
+    let data_len = (samples.len() * 2) as u32;
+    let byte_rate = SAMPLE_RATE * 2;
+
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
 }
