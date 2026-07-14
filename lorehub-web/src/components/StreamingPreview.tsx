@@ -1,17 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { imageUrl } from "@/lib/api";
 import type { FileKind } from "@/lib/types";
-import { AudioIcon, ImageIcon } from "./icons";
+import { AudioIcon } from "./icons";
 import { ModelViewer } from "./ModelViewer";
 
-const PREVIEW_ICON: Partial<Record<FileKind, typeof ImageIcon>> = {
-  image: ImageIcon,
+const PREVIEW_ICON: Partial<Record<FileKind, typeof AudioIcon>> = {
   audio: AudioIcon,
 };
 
 const PREVIEW_LABEL: Partial<Record<FileKind, string>> = {
-  image: "Image preview",
   audio: "Waveform preview",
   binary: "No preview available for this file type",
 };
@@ -20,11 +19,20 @@ const PREVIEW_LABEL: Partial<Record<FileKind, string>> = {
  * Simulates the chunk-based streaming viewer from ARCHITECTURE.md §4.3: a
  * short progress phase stands in for the backend streaming chunks to the
  * client before the preview is shown. `model3d` renders a real Three.js
- * canvas (see ModelViewer); other kinds fall back to a static placeholder.
- * The parent must pass `key={path}` so a new file remounts this component
- * (and therefore resets `progress`) instead of reusing state across files.
+ * canvas (see ModelViewer) and `image` renders a real `<img>` from
+ * lorehub-api; other kinds fall back to a static placeholder. The parent
+ * must pass `key={path}` so a new file remounts this component (and
+ * therefore resets `progress`) instead of reusing state across files.
  */
-export function StreamingPreview({ kind }: { kind: FileKind }) {
+export function StreamingPreview({
+  kind,
+  repoSlug,
+  path,
+}: {
+  kind: FileKind;
+  repoSlug: string;
+  path: string;
+}) {
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
@@ -49,6 +57,17 @@ export function StreamingPreview({ kind }: { kind: FileKind }) {
 
   if (isLoaded && kind === "model3d") {
     return <ModelViewer className="aspect-video" />;
+  }
+
+  if (isLoaded && kind === "image") {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- dynamic cross-origin SVG from lorehub-api, not a static asset next/image can optimize
+      <img
+        src={imageUrl(repoSlug, path)}
+        alt=""
+        className="aspect-video w-full rounded-comfortable object-cover"
+      />
+    );
   }
 
   return (

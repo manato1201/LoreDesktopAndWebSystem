@@ -5,7 +5,13 @@ import { ImageDiffSlider } from "./ImageDiffSlider";
 import { Model3DDiffToggle } from "./Model3DDiffToggle";
 import { TextDiffViewer } from "./TextDiffViewer";
 
-export function DiffFileViewer({ file }: { file: PRDiffFile }) {
+export function DiffFileViewer({
+  repoSlug,
+  file,
+}: {
+  repoSlug: string;
+  file: PRDiffFile;
+}) {
   const Icon = FILE_KIND_ICON[inferFileKind(file.path)];
 
   return (
@@ -19,7 +25,13 @@ export function DiffFileViewer({ file }: { file: PRDiffFile }) {
       </div>
 
       {file.diffKind === "text" && <TextDiffViewer lines={file.lines} />}
-      {file.diffKind === "image" && <ImageDiffSlider path={file.path} />}
+      {file.diffKind === "image" && (
+        <ImageDiffSlider
+          repoSlug={repoSlug}
+          path={file.path}
+          changeType={file.changeType}
+        />
+      )}
       {file.diffKind === "model3d" && <Model3DDiffToggle path={file.path} />}
     </div>
   );

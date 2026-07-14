@@ -1,10 +1,20 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { imageBeforeUrl, imageUrl } from "@/lib/api";
+import type { FileChangeType } from "@/lib/types";
 
 const STEP = 5;
 
-export function ImageDiffSlider({ path }: { path: string }) {
+export function ImageDiffSlider({
+  repoSlug,
+  path,
+  changeType,
+}: {
+  repoSlug: string;
+  path: string;
+  changeType: FileChangeType;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const [position, setPosition] = useState(50);
@@ -48,6 +58,29 @@ export function ImageDiffSlider({ path }: { path: string }) {
     event.preventDefault();
   };
 
+  const fileName = path.split("/").pop();
+  const after = imageUrl(repoSlug, path);
+
+  // An added (or deleted) file has nothing to compare against, so show a
+  // single image instead of a before/after slider.
+  if (changeType !== "modified") {
+    return (
+      <div className="flex flex-col gap-2">
+        {/* eslint-disable-next-line @next/next/no-img-element -- dynamic cross-origin SVG from lorehub-api */}
+        <img
+          src={after}
+          alt=""
+          className="aspect-video w-full rounded-comfortable object-cover"
+        />
+        <p className="text-center text-xs text-text-secondary">
+          {changeType === "added" ? "Added" : "Removed"} · {fileName}
+        </p>
+      </div>
+    );
+  }
+
+  const before = imageBeforeUrl(repoSlug, path);
+
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -55,19 +88,26 @@ export function ImageDiffSlider({ path }: { path: string }) {
         className="relative aspect-video touch-none select-none overflow-hidden rounded-comfortable bg-surface-elevated"
         onPointerMove={handlePointerMove}
       >
-        <div className="absolute inset-0 flex items-center justify-center bg-[repeating-linear-gradient(135deg,var(--color-surface-elevated),var(--color-surface-elevated)_10px,var(--color-surface-interactive)_10px,var(--color-surface-interactive)_20px)]">
-          <span className="rounded-pill bg-bg-base/70 px-3 py-1 text-xs font-semibold text-text-secondary">
-            After
-          </span>
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element -- dynamic cross-origin SVG from lorehub-api */}
+        <img
+          src={after}
+          alt="After"
+          className="pointer-events-none absolute inset-0 size-full object-cover"
+        />
 
         <div
-          className="absolute inset-0 flex items-center justify-center bg-[repeating-linear-gradient(45deg,var(--color-surface),var(--color-surface)_10px,var(--color-surface-interactive)_10px,var(--color-surface-interactive)_20px)]"
+          className="pointer-events-none absolute inset-0"
           style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
         >
-          <span className="rounded-pill bg-bg-base/70 px-3 py-1 text-xs font-semibold text-text-secondary">
-            Before
-          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element -- dynamic cross-origin SVG from lorehub-api */}
+          <img src={before} alt="Before" className="size-full object-cover" />
+        </div>
+
+        <div className="pointer-events-none absolute left-3 top-3 rounded-pill bg-bg-base/70 px-3 py-1 text-xs font-semibold text-text-secondary">
+          Before
+        </div>
+        <div className="pointer-events-none absolute right-3 top-3 rounded-pill bg-bg-base/70 px-3 py-1 text-xs font-semibold text-text-secondary">
+          After
         </div>
 
         <div
@@ -90,7 +130,7 @@ export function ImageDiffSlider({ path }: { path: string }) {
         </div>
       </div>
       <p className="text-center text-xs text-text-secondary">
-        Drag or use arrow keys to compare {path.split("/").pop()}
+        Drag or use arrow keys to compare {fileName}
       </p>
     </div>
   );

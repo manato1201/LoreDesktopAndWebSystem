@@ -62,7 +62,11 @@ export default async function PullRequestDetailPage(
           </h3>
           <div className="flex flex-col gap-4">
             {pullRequest.changedFiles.map((file) => (
-              <DiffFileViewer key={file.path} file={file} />
+              <DiffFileViewer
+                key={file.path}
+                repoSlug={pullRequest.repoSlug}
+                file={file}
+              />
             ))}
           </div>
         </div>
