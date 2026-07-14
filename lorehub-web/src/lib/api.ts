@@ -88,6 +88,10 @@ export function imageBeforeUrl(slug: string, path: string): string {
   return `${API_BASE}/api/repositories/${slug}/image-before/${path}`;
 }
 
+export function audioUrl(slug: string, path: string): string {
+  return `${API_BASE}/api/repositories/${slug}/audio/${path}`;
+}
+
 export function getCommits(slug: string): Promise<Commit[] | null> {
   return apiGetOrNull(`/api/repositories/${slug}/commits`);
 }
