@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { togglePermission as togglePermissionApi } from "@/lib/api";
 import type { AccessEntry, PermissionLevel } from "@/lib/types";
 import type { PureDirectoryNode } from "@/lib/tree-utils";
 import { DirectoryTree } from "./DirectoryTree";
@@ -16,23 +17,14 @@ export function AccessControlExplorer({
   const [selectedPath, setSelectedPath] = useState(directories[0]?.path ?? "");
   const [entriesByPath, setEntriesByPath] = useState(initialEntries);
 
-  const togglePermission = (principal: string, level: PermissionLevel) => {
-    setEntriesByPath((prev) => {
-      const current = prev[selectedPath] ?? [];
-      return {
-        ...prev,
-        [selectedPath]: current.map((entry) =>
-          entry.principal !== principal
-            ? entry
-            : {
-                ...entry,
-                permissions: entry.permissions.includes(level)
-                  ? entry.permissions.filter((p) => p !== level)
-                  : [...entry.permissions, level],
-              },
-        ),
-      };
-    });
+  const handleTogglePermission = async (
+    principal: string,
+    level: PermissionLevel,
+  ) => {
+    const updated = await togglePermissionApi(selectedPath, principal, level);
+    if (updated) {
+      setEntriesByPath((prev) => ({ ...prev, [selectedPath]: updated }));
+    }
   };
 
   return (
@@ -53,7 +45,7 @@ export function AccessControlExplorer({
         <PermissionMatrix
           path={selectedPath}
           entries={entriesByPath[selectedPath] ?? []}
-          onTogglePermission={togglePermission}
+          onTogglePermission={handleTogglePermission}
         />
       </div>
     </div>

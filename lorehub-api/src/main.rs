@@ -33,6 +33,10 @@ async fn main() {
             post(handlers::toggle_lock),
         )
         .route(
+            "/api/repositories/{slug}/content/{*path}",
+            get(handlers::get_file_content),
+        )
+        .route(
             "/api/repositories/{slug}/commits",
             get(handlers::list_commits),
         )

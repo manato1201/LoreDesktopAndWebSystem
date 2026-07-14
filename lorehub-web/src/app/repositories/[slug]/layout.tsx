@@ -1,17 +1,13 @@
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/PageHeader";
 import { RepoTabs } from "@/components/RepoTabs";
-import { mockRepositories } from "@/lib/mock-data";
-
-export function generateStaticParams() {
-  return mockRepositories.map((repo) => ({ slug: repo.slug }));
-}
+import { getRepository } from "@/lib/api";
 
 export default async function RepositoryLayout(
   props: LayoutProps<"/repositories/[slug]">,
 ) {
   const { slug } = await props.params;
-  const repository = mockRepositories.find((repo) => repo.slug === slug);
+  const repository = await getRepository(slug);
 
   if (!repository) {
     notFound();

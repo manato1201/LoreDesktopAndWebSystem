@@ -116,3 +116,9 @@ export type AuditLogEntry = {
   target: string;
   timestamp: string;
 };
+
+export type StorageUsage = {
+  usedLabel: string;
+  totalLabel: string;
+  usedPercent: number;
+};

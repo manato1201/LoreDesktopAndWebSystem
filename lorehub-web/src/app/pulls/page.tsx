@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/PageHeader";
 import { PullRequestRow } from "@/components/PullRequestRow";
-import { mockPullRequests } from "@/lib/mock-pull-requests";
+import { getPullRequests } from "@/lib/api";
 import type { PRStatus } from "@/lib/types";
 
 export const metadata = { title: "Pull Requests · LoreHub" };
@@ -23,7 +23,7 @@ export default async function PullsPage(props: PageProps<"/pulls">) {
     : params.status;
   const status: PRStatus = isPRStatus(rawStatus) ? rawStatus : "open";
 
-  const filtered = mockPullRequests.filter((pr) => pr.status === status);
+  const filtered = await getPullRequests(status);
 
   return (
     <>

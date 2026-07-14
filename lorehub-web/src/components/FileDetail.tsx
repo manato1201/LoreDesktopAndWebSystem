@@ -1,6 +1,7 @@
 import type { FileKind, FileTreeNode } from "@/lib/types";
 import { LockIcon, UnlockIcon } from "./icons";
 import { StreamingPreview } from "./StreamingPreview";
+import { TextFileContent } from "./TextFileContent";
 
 const KIND_LABEL: Record<FileKind, string> = {
   text: "Text",
@@ -11,12 +12,12 @@ const KIND_LABEL: Record<FileKind, string> = {
 };
 
 export function FileDetail({
+  repoSlug,
   node,
-  content,
   onToggleLock,
 }: {
+  repoSlug: string;
   node: FileTreeNode;
-  content?: string;
   onToggleLock: () => void;
 }) {
   return (
@@ -57,9 +58,7 @@ export function FileDetail({
       )}
 
       {node.kind === "text" ? (
-        <pre className="overflow-x-auto rounded-comfortable bg-surface-elevated p-4 text-xs leading-relaxed text-text-secondary">
-          <code>{content ?? "Preview not available."}</code>
-        </pre>
+        <TextFileContent key={node.path} repoSlug={repoSlug} path={node.path} />
       ) : (
         <StreamingPreview key={node.path} kind={node.kind} />
       )}

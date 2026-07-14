@@ -1,13 +1,13 @@
 import { notFound } from "next/navigation";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { ChangedFileRow } from "@/components/ChangedFileRow";
-import { mockCommits } from "@/lib/mock-commits";
+import { getCommit } from "@/lib/api";
 
 export default async function CommitDetailPage(
   props: PageProps<"/repositories/[slug]/commits/[hash]">,
 ) {
-  const { hash } = await props.params;
-  const commit = mockCommits.find((c) => c.hash === hash);
+  const { slug, hash } = await props.params;
+  const commit = await getCommit(slug, hash);
 
   if (!commit) {
     notFound();

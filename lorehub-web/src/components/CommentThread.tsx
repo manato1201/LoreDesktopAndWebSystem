@@ -1,33 +1,33 @@
 "use client";
 
 import { useState } from "react";
+import { addComment } from "@/lib/api";
 import type { PRComment } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
 
 export function CommentThread({
+  pullRequestId,
   initialComments,
 }: {
+  pullRequestId: string;
   initialComments: PRComment[];
 }) {
   const [comments, setComments] = useState(initialComments);
   const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     const body = draft.trim();
     if (!body) return;
 
-    setComments((prev) => [
-      ...prev,
-      {
-        id: `local-${prev.length}-${Date.now()}`,
-        author: "You",
-        authorInitials: "Y",
-        timestamp: "just now",
-        body,
-      },
-    ]);
-    setDraft("");
+    setSubmitting(true);
+    const updated = await addComment(pullRequestId, body);
+    if (updated) {
+      setComments(updated.comments);
+      setDraft("");
+    }
+    setSubmitting(false);
   };
 
   return (
@@ -70,10 +70,10 @@ export function CommentThread({
         />
         <button
           type="submit"
-          disabled={!draft.trim()}
+          disabled={!draft.trim() || submitting}
           className="self-end rounded-pill bg-accent px-5 py-2 text-xs font-bold uppercase tracking-wide text-bg-base transition-opacity disabled:opacity-40"
         >
-          Comment
+          {submitting ? "Posting…" : "Comment"}
         </button>
       </form>
     </div>

@@ -10,6 +10,7 @@ pub type SharedState = Arc<RwLock<AppState>>;
 pub struct AppState {
     pub repositories: Vec<Repository>,
     pub tree: Vec<TreeNode>,
+    pub file_contents: HashMap<String, String>,
     pub commits: Vec<Commit>,
     pub pull_requests: Vec<PullRequest>,
     pub access_entries: HashMap<String, Vec<AccessEntry>>,
@@ -548,9 +549,24 @@ pub fn seed() -> AppState {
         },
     ];
 
+    let mut file_contents = HashMap::new();
+    file_contents.insert(
+        "Source/Game.cpp".to_string(),
+        "#include \"Game.h\"\n\nvoid Game::Tick(float deltaSeconds)\n{\n    World.Update(deltaSeconds);\n    Renderer.Submit(World.GetDrawCalls());\n}\n".to_string(),
+    );
+    file_contents.insert(
+        "Source/Game.h".to_string(),
+        "#pragma once\n\nclass Game\n{\npublic:\n    void Tick(float deltaSeconds);\n};\n".to_string(),
+    );
+    file_contents.insert(
+        "README.md".to_string(),
+        "# Hollow Keep\n\nEnvironment art, terrain chunks, and lighting scenarios.\n\nRun `lore sync Assets/Environments` for a sparse checkout.\n".to_string(),
+    );
+
     AppState {
         repositories,
         tree,
+        file_contents,
         commits,
         pull_requests,
         access_entries,

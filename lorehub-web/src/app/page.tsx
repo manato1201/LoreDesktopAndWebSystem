@@ -1,15 +1,17 @@
 import { PageHeader } from "@/components/PageHeader";
 import { RepositoryBrowser } from "@/components/RepositoryBrowser";
-import { mockRepositories } from "@/lib/mock-data";
+import { getRepositories } from "@/lib/api";
 
-export default function Home() {
+export default async function Home() {
+  const repositories = await getRepositories();
+
   return (
     <>
       <PageHeader
         title="Repositories"
-        subtitle="Nebula Studios · 6 repositories"
+        subtitle={`Nebula Studios · ${repositories.length} repositories`}
       />
-      <RepositoryBrowser repositories={mockRepositories} />
+      <RepositoryBrowser repositories={repositories} />
     </>
   );
 }

@@ -32,6 +32,20 @@ pub async fn get_repository(
     }
 }
 
+pub async fn get_file_content(
+    State(state): State<SharedState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let state = state.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    match state.file_contents.get(&path) {
+        Some(content) => Json(serde_json::json!({ "content": content })).into_response(),
+        None => not_found("no text content for this file"),
+    }
+}
+
 pub async fn get_tree(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
     let state = state.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
