@@ -1,6 +1,7 @@
 import type {
   AccessEntry,
   AuditLogEntry,
+  Branch,
   Commit,
   MemberRole,
   OrgMember,
@@ -85,6 +86,10 @@ export function getCommits(slug: string): Promise<Commit[] | null> {
 
 export function getCommit(slug: string, hash: string): Promise<Commit | null> {
   return apiGetOrNull(`/api/repositories/${slug}/commits/${hash}`);
+}
+
+export function getBranches(slug: string): Promise<Branch[] | null> {
+  return apiGetOrNull(`/api/repositories/${slug}/branches`);
 }
 
 export function getPullRequests(status: PRStatus): Promise<PullRequest[]> {
