@@ -78,6 +78,20 @@ pub async fn get_image_before(
     }
 }
 
+pub async fn get_audio(
+    State(state): State<SharedState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let state = state.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    match state.audio_content.get(&path) {
+        Some(bytes) => ([(header::CONTENT_TYPE, "audio/wav")], bytes.clone()).into_response(),
+        None => not_found("no audio content for this file"),
+    }
+}
+
 pub async fn get_tree(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
     let state = state.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
