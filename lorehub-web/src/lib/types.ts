@@ -46,6 +46,14 @@ export type Commit = {
   authorInitials: string;
   timestamp: string;
   changedFiles: FileChange[];
+  branch: string;
+  parents: string[];
+};
+
+export type Branch = {
+  name: string;
+  head: string;
+  isDefault: boolean;
 };
 
 export type PRStatus = "open" | "merged" | "closed";

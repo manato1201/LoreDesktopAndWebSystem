@@ -1,22 +1,19 @@
 import { notFound } from "next/navigation";
-import { CommitRow } from "@/components/CommitRow";
-import { getCommits } from "@/lib/api";
+import { BranchGraph } from "@/components/BranchGraph";
+import { getBranches, getCommits } from "@/lib/api";
 
 export default async function CommitsPage(
   props: PageProps<"/repositories/[slug]/commits">,
 ) {
   const { slug } = await props.params;
-  const commits = await getCommits(slug);
+  const [commits, branches] = await Promise.all([
+    getCommits(slug),
+    getBranches(slug),
+  ]);
 
-  if (!commits) {
+  if (!commits || !branches) {
     notFound();
   }
 
-  return (
-    <div className="flex flex-col gap-2">
-      {commits.map((commit) => (
-        <CommitRow key={commit.hash} repoSlug={slug} commit={commit} />
-      ))}
-    </div>
-  );
+  return <BranchGraph repoSlug={slug} commits={commits} branches={branches} />;
 }
