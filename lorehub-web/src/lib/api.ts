@@ -80,6 +80,14 @@ export async function getFileContent(
   return result?.content ?? null;
 }
 
+export function imageUrl(slug: string, path: string): string {
+  return `${API_BASE}/api/repositories/${slug}/image/${path}`;
+}
+
+export function imageBeforeUrl(slug: string, path: string): string {
+  return `${API_BASE}/api/repositories/${slug}/image-before/${path}`;
+}
+
 export function getCommits(slug: string): Promise<Commit[] | null> {
   return apiGetOrNull(`/api/repositories/${slug}/commits`);
 }

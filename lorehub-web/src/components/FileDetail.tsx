@@ -60,7 +60,12 @@ export function FileDetail({
       {node.kind === "text" ? (
         <TextFileContent key={node.path} repoSlug={repoSlug} path={node.path} />
       ) : (
-        <StreamingPreview key={node.path} kind={node.kind} />
+        <StreamingPreview
+          key={node.path}
+          kind={node.kind}
+          repoSlug={repoSlug}
+          path={node.path}
+        />
       )}
     </div>
   );
