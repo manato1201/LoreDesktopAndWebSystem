@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { logout } from "@/lib/api";
+import { AuthorAvatar } from "./AuthorAvatar";
+import { useCurrentUser } from "./AuthGate";
 import {
   LockIcon,
   PullRequestIcon,
@@ -18,6 +21,14 @@ const NAV_ITEMS = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const user = useCurrentUser();
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
+    router.refresh();
+  };
 
   return (
     <aside className="flex w-60 shrink-0 flex-col gap-6 bg-bg-base px-3 py-5">
@@ -49,6 +60,24 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {user && (
+        <div className="mt-auto flex items-center gap-2 border-t border-border/40 px-2 pt-3">
+          <AuthorAvatar initials={user.initials} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold text-text-primary">
+              {user.name}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-standard px-2 py-1 text-xs text-text-secondary hover:bg-surface hover:text-text-primary"
+          >
+            Log out
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

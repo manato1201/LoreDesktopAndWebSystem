@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import { Sidebar } from "@/components/Sidebar";
+import { AuthGate } from "@/components/AuthGate";
 import "./globals.css";
 
 const inter = Inter({
@@ -21,9 +21,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased`}>
-      <body className="flex min-h-full bg-bg-base text-text-primary">
-        <Sidebar />
-        <main className="min-w-0 flex-1 px-8 py-6">{children}</main>
+      <body className="min-h-full bg-bg-base text-text-primary">
+        <AuthGate>{children}</AuthGate>
       </body>
     </html>
   );
