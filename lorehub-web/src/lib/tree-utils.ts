@@ -1,4 +1,11 @@
-import type { TreeNode } from "./types";
+import type { DirectoryTreeNode, TreeNode } from "./types";
+
+export type PureDirectoryNode = {
+  kind: "directory";
+  path: string;
+  name: string;
+  children: PureDirectoryNode[];
+};
 
 export function findNode(
   nodes: TreeNode[],
@@ -12,6 +19,12 @@ export function findNode(
     }
   }
   return undefined;
+}
+
+export function directoriesOnly(nodes: TreeNode[]): PureDirectoryNode[] {
+  return nodes
+    .filter((node): node is DirectoryTreeNode => node.kind === "directory")
+    .map((node) => ({ ...node, children: directoriesOnly(node.children) }));
 }
 
 export function withLockOverrides(
