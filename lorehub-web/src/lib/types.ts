@@ -47,3 +47,46 @@ export type Commit = {
   timestamp: string;
   changedFiles: FileChange[];
 };
+
+export type PRStatus = "open" | "merged" | "closed";
+
+export type DiffLine = {
+  type: "context" | "add" | "remove";
+  text: string;
+};
+
+export type PRDiffFile =
+  | {
+      diffKind: "text";
+      path: string;
+      changeType: FileChangeType;
+      lines: DiffLine[];
+    }
+  | {
+      diffKind: "image" | "model3d";
+      path: string;
+      changeType: FileChangeType;
+    };
+
+export type PRComment = {
+  id: string;
+  author: string;
+  authorInitials: string;
+  timestamp: string;
+  body: string;
+};
+
+export type PullRequest = {
+  id: string;
+  title: string;
+  description: string;
+  repoSlug: string;
+  repoName: string;
+  status: PRStatus;
+  author: string;
+  authorInitials: string;
+  createdAt: string;
+  updatedAt: string;
+  changedFiles: PRDiffFile[];
+  comments: PRComment[];
+};
