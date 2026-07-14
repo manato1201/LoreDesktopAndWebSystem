@@ -1,17 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { imageUrl } from "@/lib/api";
+import { audioUrl, imageUrl } from "@/lib/api";
 import type { FileKind } from "@/lib/types";
-import { AudioIcon } from "./icons";
+import { AudioPlayer } from "./AudioPlayer";
 import { ModelViewer } from "./ModelViewer";
 
-const PREVIEW_ICON: Partial<Record<FileKind, typeof AudioIcon>> = {
-  audio: AudioIcon,
-};
-
 const PREVIEW_LABEL: Partial<Record<FileKind, string>> = {
-  audio: "Waveform preview",
   binary: "No preview available for this file type",
 };
 
@@ -19,10 +14,11 @@ const PREVIEW_LABEL: Partial<Record<FileKind, string>> = {
  * Simulates the chunk-based streaming viewer from ARCHITECTURE.md §4.3: a
  * short progress phase stands in for the backend streaming chunks to the
  * client before the preview is shown. `model3d` renders a real Three.js
- * canvas (see ModelViewer) and `image` renders a real `<img>` from
- * lorehub-api; other kinds fall back to a static placeholder. The parent
- * must pass `key={path}` so a new file remounts this component (and
- * therefore resets `progress`) instead of reusing state across files.
+ * canvas (ModelViewer), `image` a real `<img>`, and `audio` a real
+ * waveform + playback (AudioPlayer) — all backed by lorehub-api. `binary`
+ * falls back to a static placeholder. The parent must pass `key={path}` so
+ * a new file remounts this component (and therefore resets `progress`)
+ * instead of reusing state across files.
  */
 export function StreamingPreview({
   kind,
@@ -52,7 +48,6 @@ export function StreamingPreview({
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  const Icon = PREVIEW_ICON[kind];
   const isLoaded = progress >= 100;
 
   if (isLoaded && kind === "model3d") {
@@ -70,15 +65,16 @@ export function StreamingPreview({
     );
   }
 
+  if (isLoaded && kind === "audio") {
+    return <AudioPlayer src={audioUrl(repoSlug, path)} />;
+  }
+
   return (
     <div className="flex aspect-video flex-col items-center justify-center gap-3 rounded-comfortable bg-surface-elevated">
       {isLoaded ? (
-        <>
-          {Icon && <Icon className="size-10 text-text-secondary" />}
-          <p className="max-w-xs text-center text-xs text-text-secondary">
-            {PREVIEW_LABEL[kind]}
-          </p>
-        </>
+        <p className="max-w-xs text-center text-xs text-text-secondary">
+          {PREVIEW_LABEL[kind]}
+        </p>
       ) : (
         <div className="flex w-48 flex-col items-center gap-2">
           <p className="text-xs text-text-secondary">Streaming chunks…</p>

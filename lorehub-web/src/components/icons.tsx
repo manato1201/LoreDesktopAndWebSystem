@@ -1,5 +1,39 @@
 import type { FileKind } from "@/lib/types";
 
+export function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M7 4.5v15l14-7.5-14-7.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="6" y="4.5" width="4.5" height="15" rx="1" fill="currentColor" />
+      <rect
+        x="13.5"
+        y="4.5"
+        width="4.5"
+        height="15"
+        rx="1"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 export function RepositoryIcon({ className }: { className?: string }) {
   return (
     <svg
