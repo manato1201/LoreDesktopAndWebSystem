@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::auth;
 use crate::image_assets;
 use crate::models::*;
 
@@ -22,6 +23,11 @@ pub struct AppState {
     pub org_members: Vec<OrgMember>,
     pub storage: StorageUsage,
     pub audit_log: Vec<AuditLogEntry>,
+    /// email -> argon2 password hash. Every demo account shares the same
+    /// password ("lorehub") for convenience — see README/login page copy.
+    pub credentials: HashMap<String, String>,
+    /// session token -> email.
+    pub sessions: HashMap<String, String>,
 }
 
 impl AppState {
@@ -639,6 +645,12 @@ pub fn seed() -> AppState {
         generate_theme_wav(),
     );
 
+    let demo_password_hash = auth::hash_password("lorehub");
+    let credentials = org_members
+        .iter()
+        .map(|m| (m.email.clone(), demo_password_hash.clone()))
+        .collect();
+
     AppState {
         repositories,
         tree,
@@ -653,6 +665,8 @@ pub fn seed() -> AppState {
         org_members,
         storage,
         audit_log,
+        credentials,
+        sessions: HashMap::new(),
     }
 }
 

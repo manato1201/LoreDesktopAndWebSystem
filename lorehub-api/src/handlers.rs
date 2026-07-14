@@ -1,10 +1,12 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::auth;
 use crate::models::*;
 use crate::state::SharedState;
 
@@ -14,6 +16,95 @@ fn not_found(message: &str) -> Response {
         Json(serde_json::json!({ "error": message })),
     )
         .into_response()
+}
+
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({ "error": "unauthorized" })),
+    )
+        .into_response()
+}
+
+/// Resolves the session cookie to the authenticated `OrgMember` and inserts
+/// it into request extensions so downstream handlers can pull it out via
+/// `Extension<OrgMember>` instead of re-checking the session themselves.
+pub async fn require_auth(
+    State(state): State<SharedState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let token = auth::extract_session_token(request.headers());
+    let state_guard = state.read().await;
+    let email = token.and_then(|t| state_guard.sessions.get(&t).cloned());
+    let Some(email) = email else {
+        return unauthorized();
+    };
+    let Some(user) = state_guard
+        .org_members
+        .iter()
+        .find(|m| m.email == email)
+        .cloned()
+    else {
+        return unauthorized();
+    };
+    drop(state_guard);
+
+    request.extensions_mut().insert(user);
+    next.run(request).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+pub async fn login(State(state): State<SharedState>, Json(body): Json<LoginRequest>) -> Response {
+    let mut state = state.write().await;
+
+    let Some(hash) = state.credentials.get(&body.email).cloned() else {
+        return unauthorized();
+    };
+    if !auth::verify_password(&body.password, &hash) {
+        return unauthorized();
+    }
+    let Some(user) = state
+        .org_members
+        .iter()
+        .find(|m| m.email == body.email)
+        .cloned()
+    else {
+        return unauthorized();
+    };
+
+    let token = auth::generate_token();
+    state.sessions.insert(token.clone(), body.email);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::SET_COOKIE,
+        auth::session_cookie(&token).parse().unwrap(),
+    );
+
+    (headers, Json(serde_json::json!({ "user": user }))).into_response()
+}
+
+pub async fn logout(State(state): State<SharedState>, headers: HeaderMap) -> Response {
+    if let Some(token) = auth::extract_session_token(&headers) {
+        state.write().await.sessions.remove(&token);
+    }
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::SET_COOKIE,
+        auth::cleared_session_cookie().parse().unwrap(),
+    );
+    (response_headers, StatusCode::NO_CONTENT).into_response()
+}
+
+pub async fn me(axum::Extension(user): axum::Extension<OrgMember>) -> Json<OrgMember> {
+    Json(user)
 }
 
 pub async fn list_repositories(State(state): State<SharedState>) -> Json<Vec<Repository>> {
@@ -109,6 +200,7 @@ pub struct LockRequest {
 
 pub async fn toggle_lock(
     State(state): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path(slug): Path<String>,
     Json(body): Json<LockRequest>,
 ) -> Response {
@@ -118,7 +210,7 @@ pub async fn toggle_lock(
     }
 
     let locked_by = if body.lock {
-        Some("You".to_string())
+        Some(user.name.clone())
     } else {
         None
     };
@@ -128,7 +220,7 @@ pub async fn toggle_lock(
     }
 
     let action = if body.lock { "locked" } else { "unlocked" };
-    state.record_audit("You", action, &body.path);
+    state.record_audit(&user.name, action, &body.path);
 
     Json(state.tree.clone()).into_response()
 }
@@ -208,6 +300,7 @@ pub struct CommentRequest {
 
 pub async fn add_comment(
     State(state): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path(id): Path<String>,
     Json(body): Json<CommentRequest>,
 ) -> Response {
@@ -218,8 +311,8 @@ pub async fn add_comment(
 
     let comment = PrComment {
         id: format!("local-{}", pr.comments.len() + 1),
-        author: "You".to_string(),
-        author_initials: "Y".to_string(),
+        author: user.name.clone(),
+        author_initials: user.initials.clone(),
         timestamp: "just now".to_string(),
         body: body.body,
     };
@@ -228,7 +321,7 @@ pub async fn add_comment(
     let pr_title = pr.title.clone();
 
     state.record_audit(
-        "You",
+        &user.name,
         "commented on pull request",
         &format!("#{pr_id} {pr_title}"),
     );
@@ -253,6 +346,7 @@ pub struct PermissionToggleRequest {
 
 pub async fn toggle_permission(
     State(state): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Json(body): Json<PermissionToggleRequest>,
 ) -> Response {
     let mut state = state.write().await;
@@ -269,7 +363,7 @@ pub async fn toggle_permission(
         entry.permissions.push(body.level);
     }
 
-    state.record_audit("You", "updated permissions on", &body.path);
+    state.record_audit(&user.name, "updated permissions on", &body.path);
 
     let entries = state.access_entries.get(&body.path).unwrap();
     Json(entries.clone()).into_response()
@@ -287,6 +381,7 @@ pub struct RoleUpdateRequest {
 
 pub async fn update_member_role(
     State(state): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path(email): Path<String>,
     Json(body): Json<RoleUpdateRequest>,
 ) -> Response {
@@ -297,7 +392,7 @@ pub async fn update_member_role(
     member.role = body.role;
     let member = member.clone();
 
-    state.record_audit("You", "changed role for", &email);
+    state.record_audit(&user.name, "changed role for", &email);
 
     Json(member).into_response()
 }
