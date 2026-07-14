@@ -28,3 +28,22 @@ export type FileTreeNode = {
 };
 
 export type TreeNode = DirectoryTreeNode | FileTreeNode;
+
+export type FileChangeType = "added" | "modified" | "deleted";
+
+export type FileChange = {
+  path: string;
+  changeType: FileChangeType;
+  sizeDeltaLabel: string;
+};
+
+export type Commit = {
+  hash: string;
+  shortHash: string;
+  message: string;
+  description?: string;
+  author: string;
+  authorInitials: string;
+  timestamp: string;
+  changedFiles: FileChange[];
+};

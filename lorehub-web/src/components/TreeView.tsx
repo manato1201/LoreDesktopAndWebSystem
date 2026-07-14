@@ -3,25 +3,11 @@
 import { useState } from "react";
 import type { TreeNode } from "@/lib/types";
 import {
-  AudioIcon,
   ChevronRightIcon,
-  FileTextIcon,
+  FILE_KIND_ICON,
   FolderIcon,
-  ImageIcon,
   LockIcon,
-  Model3DIcon,
 } from "./icons";
-
-const FILE_ICON: Record<
-  Exclude<TreeNode["kind"], "directory">,
-  typeof FileTextIcon
-> = {
-  text: FileTextIcon,
-  binary: FileTextIcon,
-  image: ImageIcon,
-  model3d: Model3DIcon,
-  audio: AudioIcon,
-};
 
 function TreeRow({
   node,
@@ -73,7 +59,7 @@ function TreeRow({
     );
   }
 
-  const Icon = FILE_ICON[node.kind];
+  const Icon = FILE_KIND_ICON[node.kind];
   const isSelected = node.path === selectedPath;
 
   return (
