@@ -1,9 +1,11 @@
+import type { ReactNode } from "react";
+
 export function PageHeader({
   title,
   subtitle,
 }: {
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
 }) {
   return (
     <div className="mb-6 flex flex-col gap-1">
