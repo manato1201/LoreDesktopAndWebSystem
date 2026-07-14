@@ -1,3 +1,5 @@
+import type { FileKind } from "@/lib/types";
+
 export function RepositoryIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -280,4 +282,51 @@ export function SearchIcon({ className }: { className?: string }) {
       />
     </svg>
   );
+}
+
+export const FILE_KIND_ICON: Record<FileKind, typeof FileTextIcon> = {
+  text: FileTextIcon,
+  binary: FileTextIcon,
+  image: ImageIcon,
+  model3d: Model3DIcon,
+  audio: AudioIcon,
+};
+
+const TEXT_EXTENSIONS = new Set([
+  "cpp",
+  "h",
+  "hpp",
+  "c",
+  "cs",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "rs",
+  "py",
+  "md",
+  "json",
+  "toml",
+  "yaml",
+  "yml",
+]);
+const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "tga",
+  "exr",
+]);
+const MODEL_EXTENSIONS = new Set(["fbx", "obj", "gltf", "glb", "blend", "usd"]);
+const AUDIO_EXTENSIONS = new Set(["wav", "mp3", "ogg", "flac"]);
+
+export function inferFileKind(path: string): FileKind {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (MODEL_EXTENSIONS.has(ext)) return "model3d";
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+  if (TEXT_EXTENSIONS.has(ext)) return "text";
+  return "binary";
 }
