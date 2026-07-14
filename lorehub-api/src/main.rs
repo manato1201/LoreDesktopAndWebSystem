@@ -44,6 +44,10 @@ async fn main() {
             "/api/repositories/{slug}/commits/{hash}",
             get(handlers::get_commit),
         )
+        .route(
+            "/api/repositories/{slug}/branches",
+            get(handlers::list_branches),
+        )
         .route("/api/pulls", get(handlers::list_pull_requests))
         .route("/api/pulls/{id}", get(handlers::get_pull_request))
         .route("/api/pulls/{id}/comments", post(handlers::add_comment))

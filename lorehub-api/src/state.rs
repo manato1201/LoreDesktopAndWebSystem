@@ -12,6 +12,7 @@ pub struct AppState {
     pub tree: Vec<TreeNode>,
     pub file_contents: HashMap<String, String>,
     pub commits: Vec<Commit>,
+    pub branches: Vec<Branch>,
     pub pull_requests: Vec<PullRequest>,
     pub access_entries: HashMap<String, Vec<AccessEntry>>,
     pub org_members: Vec<OrgMember>,
@@ -218,72 +219,25 @@ pub fn seed() -> AppState {
         },
     ];
 
+    // Chronological order (oldest first): main has a linear base, then
+    // feature/dusk-skybox branches off and merges back in, while
+    // feature/hero-rig-retarget branches off and is still open.
     let commits = vec![
         Commit {
-            hash: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
-            short_hash: "a1c4e7f".into(),
-            message: "Retarget hero rig to updated skeleton".into(),
+            hash: "0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into(),
+            short_hash: "0f4a7b0".into(),
+            message: "Document sparse checkout workflow".into(),
             description: None,
             author: "Aiko Tanaka".into(),
             author_initials: "AT".into(),
-            timestamp: "2h ago".into(),
+            timestamp: "1w ago".into(),
             changed_files: vec![FileChange {
-                path: "Assets/Characters/hero_rig.fbx".into(),
+                path: "README.md".into(),
                 change_type: FileChangeType::Modified,
-                size_delta_label: "+1.2 MB".into(),
+                size_delta_label: "+0.6 KB".into(),
             }],
-        },
-        Commit {
-            hash: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
-            short_hash: "7d2b9c1".into(),
-            message: "Add dusk skybox for Hollow Keep exteriors".into(),
-            description: None,
-            author: "Marco Silva".into(),
-            author_initials: "MS".into(),
-            timestamp: "6h ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Environments/skybox_dusk.png".into(),
-                change_type: FileChangeType::Added,
-                size_delta_label: "+64.0 MB".into(),
-            }],
-        },
-        Commit {
-            hash: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
-            short_hash: "e5f8a1b".into(),
-            message: "Fix world tick order for late-joining actors".into(),
-            description: Some(
-                "Renderer.Submit was picking up stale draw calls when actors joined mid-tick."
-                    .into(),
-            ),
-            author: "Priya Desai".into(),
-            author_initials: "PD".into(),
-            timestamp: "1d ago".into(),
-            changed_files: vec![
-                FileChange {
-                    path: "Source/Game.cpp".into(),
-                    change_type: FileChangeType::Modified,
-                    size_delta_label: "+0.4 KB".into(),
-                },
-                FileChange {
-                    path: "Source/Game.h".into(),
-                    change_type: FileChangeType::Modified,
-                    size_delta_label: "±0 B".into(),
-                },
-            ],
-        },
-        Commit {
-            hash: "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
-            short_hash: "3c6d9e2".into(),
-            message: "Remove deprecated terrain LOD tier".into(),
-            description: None,
-            author: "Marco Silva".into(),
-            author_initials: "MS".into(),
-            timestamp: "2d ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
-                change_type: FileChangeType::Modified,
-                size_delta_label: "-320.0 MB".into(),
-            }],
+            branch: "main".into(),
+            parents: vec![],
         },
         Commit {
             hash: "9b1e4f7a0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f".into(),
@@ -298,20 +252,115 @@ pub fn seed() -> AppState {
                 change_type: FileChangeType::Modified,
                 size_delta_label: "+3.1 MB".into(),
             }],
+            branch: "main".into(),
+            parents: vec!["0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into()],
         },
         Commit {
-            hash: "0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into(),
-            short_hash: "0f4a7b0".into(),
-            message: "Document sparse checkout workflow".into(),
+            hash: "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
+            short_hash: "3c6d9e2".into(),
+            message: "Remove deprecated terrain LOD tier".into(),
+            description: None,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            timestamp: "2d ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
+                change_type: FileChangeType::Modified,
+                size_delta_label: "-320.0 MB".into(),
+            }],
+            branch: "main".into(),
+            parents: vec!["9b1e4f7a0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f".into()],
+        },
+        Commit {
+            hash: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
+            short_hash: "7d2b9c1".into(),
+            message: "Add dusk skybox for Hollow Keep exteriors".into(),
+            description: None,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            timestamp: "1d ago".into(),
+            changed_files: vec![FileChange {
+                path: "Assets/Environments/skybox_dusk.png".into(),
+                change_type: FileChangeType::Added,
+                size_delta_label: "+64.0 MB".into(),
+            }],
+            branch: "feature/dusk-skybox".into(),
+            parents: vec!["3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into()],
+        },
+        Commit {
+            hash: "f2a9c81b5e3d6a9c2f5b8e1d4a7c0f3b6e9a2d5f".into(),
+            short_hash: "f2a9c81".into(),
+            message: "Merge branch 'feature/dusk-skybox' into main".into(),
+            description: None,
+            author: "Marco Silva".into(),
+            author_initials: "MS".into(),
+            timestamp: "20h ago".into(),
+            changed_files: vec![],
+            branch: "main".into(),
+            parents: vec![
+                "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
+                "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
+            ],
+        },
+        Commit {
+            hash: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
+            short_hash: "e5f8a1b".into(),
+            message: "Fix world tick order for late-joining actors".into(),
+            description: Some(
+                "Renderer.Submit was picking up stale draw calls when actors joined mid-tick."
+                    .into(),
+            ),
+            author: "Priya Desai".into(),
+            author_initials: "PD".into(),
+            timestamp: "6h ago".into(),
+            changed_files: vec![
+                FileChange {
+                    path: "Source/Game.cpp".into(),
+                    change_type: FileChangeType::Modified,
+                    size_delta_label: "+0.4 KB".into(),
+                },
+                FileChange {
+                    path: "Source/Game.h".into(),
+                    change_type: FileChangeType::Modified,
+                    size_delta_label: "±0 B".into(),
+                },
+            ],
+            branch: "main".into(),
+            parents: vec!["f2a9c81b5e3d6a9c2f5b8e1d4a7c0f3b6e9a2d5f".into()],
+        },
+        Commit {
+            hash: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
+            short_hash: "a1c4e7f".into(),
+            message: "Retarget hero rig to updated skeleton".into(),
             description: None,
             author: "Aiko Tanaka".into(),
             author_initials: "AT".into(),
-            timestamp: "1w ago".into(),
+            timestamp: "2h ago".into(),
             changed_files: vec![FileChange {
-                path: "README.md".into(),
+                path: "Assets/Characters/hero_rig.fbx".into(),
                 change_type: FileChangeType::Modified,
-                size_delta_label: "+0.6 KB".into(),
+                size_delta_label: "+1.2 MB".into(),
             }],
+            branch: "feature/hero-rig-retarget".into(),
+            parents: vec!["3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into()],
+        },
+    ];
+
+    let branches = vec![
+        Branch {
+            name: "main".into(),
+            head: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
+            is_default: true,
+        },
+        Branch {
+            name: "feature/dusk-skybox".into(),
+            head: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
+            is_default: false,
+        },
+        Branch {
+            name: "feature/hero-rig-retarget".into(),
+            head: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
+            is_default: false,
         },
     ];
 
@@ -556,7 +605,8 @@ pub fn seed() -> AppState {
     );
     file_contents.insert(
         "Source/Game.h".to_string(),
-        "#pragma once\n\nclass Game\n{\npublic:\n    void Tick(float deltaSeconds);\n};\n".to_string(),
+        "#pragma once\n\nclass Game\n{\npublic:\n    void Tick(float deltaSeconds);\n};\n"
+            .to_string(),
     );
     file_contents.insert(
         "README.md".to_string(),
@@ -568,6 +618,7 @@ pub fn seed() -> AppState {
         tree,
         file_contents,
         commits,
+        branches,
         pull_requests,
         access_entries,
         org_members,

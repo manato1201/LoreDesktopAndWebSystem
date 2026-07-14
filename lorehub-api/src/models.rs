@@ -121,6 +121,16 @@ pub struct Commit {
     pub author_initials: String,
     pub timestamp: String,
     pub changed_files: Vec<FileChange>,
+    pub branch: String,
+    pub parents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branch {
+    pub name: String,
+    pub head: String,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
