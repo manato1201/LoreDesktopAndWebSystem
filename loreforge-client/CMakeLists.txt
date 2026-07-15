@@ -31,6 +31,7 @@ qt_add_qml_module(LoreForgeClient
         qml/LoginScreen.qml
         qml/RepositoryListScreen.qml
         qml/RepositoryWorkspaceScreen.qml
+        qml/CommitHistoryView.qml
     SOURCES
         src/ApiClient.h
         src/ApiClient.cpp
@@ -40,6 +41,8 @@ qt_add_qml_module(LoreForgeClient
         src/RepositoryListModel.cpp
         src/RepositoryTreeModel.h
         src/RepositoryTreeModel.cpp
+        src/CommitListModel.h
+        src/CommitListModel.cpp
 )
 
 target_include_directories(LoreForgeClient
