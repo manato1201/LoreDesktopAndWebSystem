@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { logout } from "@/lib/api";
 import type { OrgMember } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
+import { GlobalSearch } from "./GlobalSearch";
 import {
   LockIcon,
   PullRequestIcon,
@@ -36,6 +37,10 @@ export function Sidebar({ user }: { user: OrgMember }) {
           LoreHub
         </span>
       </Link>
+
+      <div className="px-2">
+        <GlobalSearch />
+      </div>
 
       <nav aria-label="Primary" className="flex flex-col gap-1">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
