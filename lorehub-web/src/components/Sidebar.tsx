@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { logout } from "@/lib/api";
+import type { OrgMember } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
-import { useCurrentUser } from "./AuthGate";
 import {
   LockIcon,
   PullRequestIcon,
@@ -19,10 +19,9 @@ const NAV_ITEMS = [
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
-export function Sidebar() {
+export function Sidebar({ user }: { user: OrgMember }) {
   const pathname = usePathname();
   const router = useRouter();
-  const user = useCurrentUser();
 
   const handleLogout = async () => {
     await logout();
@@ -61,23 +60,21 @@ export function Sidebar() {
         })}
       </nav>
 
-      {user && (
-        <div className="mt-auto flex items-center gap-2 border-t border-border/40 px-2 pt-3">
-          <AuthorAvatar initials={user.initials} />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-xs font-bold text-text-primary">
-              {user.name}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="rounded-standard px-2 py-1 text-xs text-text-secondary hover:bg-surface hover:text-text-primary"
-          >
-            Log out
-          </button>
+      <div className="mt-auto flex items-center gap-2 border-t border-border/40 px-2 pt-3">
+        <AuthorAvatar initials={user.initials} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold text-text-primary">
+            {user.name}
+          </p>
         </div>
-      )}
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="rounded-standard px-2 py-1 text-xs text-text-secondary hover:bg-surface hover:text-text-primary"
+        >
+          Log out
+        </button>
+      </div>
     </aside>
   );
 }

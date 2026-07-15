@@ -27,11 +27,21 @@ async fn main() {
         .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true);
 
-    let public_routes = Router::new()
-        .route("/api/auth/login", post(handlers::login))
+    let public_routes = Router::new().route("/api/auth/login", post(handlers::login));
+
+    // Everything else requires a valid session, including plain reads —
+    // lorehub-web forwards the session cookie from Server Components (see
+    // src/lib/auth-server.ts) so this stays transparent to the browser.
+    let protected_routes = Router::new()
+        .route("/api/auth/logout", post(handlers::logout))
+        .route("/api/auth/me", get(handlers::me))
         .route("/api/repositories", get(handlers::list_repositories))
         .route("/api/repositories/{slug}", get(handlers::get_repository))
         .route("/api/repositories/{slug}/tree", get(handlers::get_tree))
+        .route(
+            "/api/repositories/{slug}/tree/lock",
+            post(handlers::toggle_lock),
+        )
         .route(
             "/api/repositories/{slug}/content/{*path}",
             get(handlers::get_file_content),
@@ -62,34 +72,22 @@ async fn main() {
         )
         .route("/api/pulls", get(handlers::list_pull_requests))
         .route("/api/pulls/{id}", get(handlers::get_pull_request))
+        .route("/api/pulls/{id}/comments", post(handlers::add_comment))
         .route(
             "/api/access-control/entries",
             get(handlers::get_access_entries),
         )
-        .route("/api/org/members", get(handlers::list_members))
-        .route("/api/org/storage", get(handlers::get_storage))
-        .route("/api/org/audit-log", get(handlers::get_audit_log));
-
-    // Everything that mutates state (or reveals who's logged in) requires a
-    // valid session. GET reads stay public in this pass — see auth.rs /
-    // README notes for the follow-up needed to also gate server-rendered
-    // reads.
-    let protected_routes = Router::new()
-        .route("/api/auth/logout", post(handlers::logout))
-        .route("/api/auth/me", get(handlers::me))
-        .route(
-            "/api/repositories/{slug}/tree/lock",
-            post(handlers::toggle_lock),
-        )
-        .route("/api/pulls/{id}/comments", post(handlers::add_comment))
         .route(
             "/api/access-control/entries/toggle",
             post(handlers::toggle_permission),
         )
+        .route("/api/org/members", get(handlers::list_members))
         .route(
             "/api/org/members/{email}",
             patch(handlers::update_member_role),
         )
+        .route("/api/org/storage", get(handlers::get_storage))
+        .route("/api/org/audit-log", get(handlers::get_audit_log))
         .layer(middleware::from_fn_with_state(
             shared_state.clone(),
             handlers::require_auth,

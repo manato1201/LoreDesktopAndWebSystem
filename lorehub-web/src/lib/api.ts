@@ -15,10 +15,17 @@ import type {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
-async function apiGet<T>(path: string): Promise<T> {
+/**
+ * `cookie` is only needed when calling from a Server Component (see
+ * src/lib/auth-server.ts) — Node has no ambient cookie jar. Client
+ * Components omit it; the browser attaches the session cookie itself
+ * because every call already sets `credentials: "include"`.
+ */
+async function apiGet<T>(path: string, cookie?: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     cache: "no-store",
     credentials: "include",
+    headers: cookie ? { Cookie: cookie } : undefined,
   });
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
@@ -26,10 +33,14 @@ async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function apiGetOrNull<T>(path: string): Promise<T | null> {
+async function apiGetOrNull<T>(
+  path: string,
+  cookie?: string,
+): Promise<T | null> {
   const res = await fetch(`${API_BASE}${path}`, {
     cache: "no-store",
     credentials: "include",
+    headers: cookie ? { Cookie: cookie } : undefined,
   });
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
@@ -57,16 +68,22 @@ async function apiSend<T>(
   return res.json() as Promise<T>;
 }
 
-export function getRepositories(): Promise<Repository[]> {
-  return apiGet("/api/repositories");
+export function getRepositories(cookie?: string): Promise<Repository[]> {
+  return apiGet("/api/repositories", cookie);
 }
 
-export function getRepository(slug: string): Promise<Repository | null> {
-  return apiGetOrNull(`/api/repositories/${slug}`);
+export function getRepository(
+  slug: string,
+  cookie?: string,
+): Promise<Repository | null> {
+  return apiGetOrNull(`/api/repositories/${slug}`, cookie);
 }
 
-export function getTree(slug: string): Promise<TreeNode[] | null> {
-  return apiGetOrNull(`/api/repositories/${slug}/tree`);
+export function getTree(
+  slug: string,
+  cookie?: string,
+): Promise<TreeNode[] | null> {
+  return apiGetOrNull(`/api/repositories/${slug}/tree`, cookie);
 }
 
 export function toggleLock(
@@ -99,24 +116,40 @@ export function audioUrl(slug: string, path: string): string {
   return `${API_BASE}/api/repositories/${slug}/audio/${path}`;
 }
 
-export function getCommits(slug: string): Promise<Commit[] | null> {
-  return apiGetOrNull(`/api/repositories/${slug}/commits`);
+export function getCommits(
+  slug: string,
+  cookie?: string,
+): Promise<Commit[] | null> {
+  return apiGetOrNull(`/api/repositories/${slug}/commits`, cookie);
 }
 
-export function getCommit(slug: string, hash: string): Promise<Commit | null> {
-  return apiGetOrNull(`/api/repositories/${slug}/commits/${hash}`);
+export function getCommit(
+  slug: string,
+  hash: string,
+  cookie?: string,
+): Promise<Commit | null> {
+  return apiGetOrNull(`/api/repositories/${slug}/commits/${hash}`, cookie);
 }
 
-export function getBranches(slug: string): Promise<Branch[] | null> {
-  return apiGetOrNull(`/api/repositories/${slug}/branches`);
+export function getBranches(
+  slug: string,
+  cookie?: string,
+): Promise<Branch[] | null> {
+  return apiGetOrNull(`/api/repositories/${slug}/branches`, cookie);
 }
 
-export function getPullRequests(status: PRStatus): Promise<PullRequest[]> {
-  return apiGet(`/api/pulls?status=${status}`);
+export function getPullRequests(
+  status: PRStatus,
+  cookie?: string,
+): Promise<PullRequest[]> {
+  return apiGet(`/api/pulls?status=${status}`, cookie);
 }
 
-export function getPullRequest(id: string): Promise<PullRequest | null> {
-  return apiGetOrNull(`/api/pulls/${id}`);
+export function getPullRequest(
+  id: string,
+  cookie?: string,
+): Promise<PullRequest | null> {
+  return apiGetOrNull(`/api/pulls/${id}`, cookie);
 }
 
 export function addComment(
@@ -126,8 +159,10 @@ export function addComment(
   return apiSend("POST", `/api/pulls/${id}/comments`, { body });
 }
 
-export function getAccessEntries(): Promise<Record<string, AccessEntry[]>> {
-  return apiGet("/api/access-control/entries");
+export function getAccessEntries(
+  cookie?: string,
+): Promise<Record<string, AccessEntry[]>> {
+  return apiGet("/api/access-control/entries", cookie);
 }
 
 export function togglePermission(
@@ -142,8 +177,8 @@ export function togglePermission(
   });
 }
 
-export function getMembers(): Promise<OrgMember[]> {
-  return apiGet("/api/org/members");
+export function getMembers(cookie?: string): Promise<OrgMember[]> {
+  return apiGet("/api/org/members", cookie);
 }
 
 export function updateMemberRole(
@@ -155,18 +190,21 @@ export function updateMemberRole(
   });
 }
 
-export function getStorage(): Promise<StorageUsage> {
-  return apiGet("/api/org/storage");
+export function getStorage(cookie?: string): Promise<StorageUsage> {
+  return apiGet("/api/org/storage", cookie);
 }
 
-export function getAuditLog(): Promise<AuditLogEntry[]> {
-  return apiGet("/api/org/audit-log");
+export function getAuditLog(cookie?: string): Promise<AuditLogEntry[]> {
+  return apiGet("/api/org/audit-log", cookie);
 }
 
-export async function getCurrentUser(): Promise<OrgMember | null> {
+export async function getCurrentUser(
+  cookie?: string,
+): Promise<OrgMember | null> {
   const res = await fetch(`${API_BASE}/api/auth/me`, {
     cache: "no-store",
     credentials: "include",
+    headers: cookie ? { Cookie: cookie } : undefined,
   });
   if (!res.ok) return null;
   return res.json() as Promise<OrgMember>;

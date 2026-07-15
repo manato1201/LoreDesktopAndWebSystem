@@ -2,12 +2,14 @@ import { notFound } from "next/navigation";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { ChangedFileRow } from "@/components/ChangedFileRow";
 import { getCommit } from "@/lib/api";
+import { getSessionCookieHeader } from "@/lib/auth-server";
 
 export default async function CommitDetailPage(
   props: PageProps<"/repositories/[slug]/commits/[hash]">,
 ) {
   const { slug, hash } = await props.params;
-  const commit = await getCommit(slug, hash);
+  const cookie = await getSessionCookieHeader();
+  const commit = await getCommit(slug, hash, cookie);
 
   if (!commit) {
     notFound();

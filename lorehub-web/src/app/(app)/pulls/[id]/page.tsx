@@ -6,12 +6,14 @@ import { DiffFileViewer } from "@/components/DiffFileViewer";
 import { PageHeader } from "@/components/PageHeader";
 import { PRStatusPill } from "@/components/PRStatusPill";
 import { getPullRequest } from "@/lib/api";
+import { getSessionCookieHeader } from "@/lib/auth-server";
 
 export default async function PullRequestDetailPage(
   props: PageProps<"/pulls/[id]">,
 ) {
   const { id } = await props.params;
-  const pullRequest = await getPullRequest(id);
+  const cookie = await getSessionCookieHeader();
+  const pullRequest = await getPullRequest(id, cookie);
 
   if (!pullRequest) {
     notFound();

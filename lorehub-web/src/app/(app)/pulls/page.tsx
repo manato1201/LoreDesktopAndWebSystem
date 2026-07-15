@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/PageHeader";
 import { PullRequestRow } from "@/components/PullRequestRow";
 import { getPullRequests } from "@/lib/api";
+import { getSessionCookieHeader } from "@/lib/auth-server";
 import type { PRStatus } from "@/lib/types";
 
 export const metadata = { title: "Pull Requests · LoreHub" };
@@ -23,7 +24,8 @@ export default async function PullsPage(props: PageProps<"/pulls">) {
     : params.status;
   const status: PRStatus = isPRStatus(rawStatus) ? rawStatus : "open";
 
-  const filtered = await getPullRequests(status);
+  const cookie = await getSessionCookieHeader();
+  const filtered = await getPullRequests(status, cookie);
 
   return (
     <>

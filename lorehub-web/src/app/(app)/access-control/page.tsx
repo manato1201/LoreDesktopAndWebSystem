@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { AccessControlExplorer } from "@/components/AccessControlExplorer";
 import { PageHeader } from "@/components/PageHeader";
 import { getAccessEntries, getRepositories, getTree } from "@/lib/api";
+import { getSessionCookieHeader } from "@/lib/auth-server";
 import { directoriesOnly } from "@/lib/tree-utils";
 
 export const metadata = { title: "Access Control · LoreHub" };
@@ -13,7 +14,8 @@ export default async function AccessControlPage(
   const params = await props.searchParams;
   const rawRepo = Array.isArray(params.repo) ? params.repo[0] : params.repo;
 
-  const repositories = await getRepositories();
+  const cookie = await getSessionCookieHeader();
+  const repositories = await getRepositories(cookie);
   const repository =
     repositories.find((repo) => repo.slug === rawRepo) ?? repositories[0];
 
@@ -22,8 +24,8 @@ export default async function AccessControlPage(
   }
 
   const [tree, entries] = await Promise.all([
-    getTree(repository.slug),
-    getAccessEntries(),
+    getTree(repository.slug, cookie),
+    getAccessEntries(cookie),
   ]);
   if (!tree) {
     notFound();
