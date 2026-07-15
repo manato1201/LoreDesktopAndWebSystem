@@ -12,11 +12,23 @@ Rectangle {
     border.width: 1
 
     property var nodeRegistry: ({})
+    property var nodeTypes: ({})
     property string pendingFrom: ""
     property var connections: []
 
-    function registerNode(id, item) {
+    property var directoryModel: []
+    property var roleModel: []
+
+    property string saveFeedback: ""
+    property color saveFeedbackColor: Theme.colorTextSecondary
+
+    PermissionConfigController {
+        id: permissionConfig
+    }
+
+    function registerNode(id, item, kind) {
         nodeRegistry[id] = item
+        nodeTypes[id] = kind
     }
 
     function edgeAnchor(item, side) {
@@ -51,6 +63,74 @@ Rectangle {
         lineCanvas.requestPaint()
     }
 
+    function defaultDirectoryModel() {
+        return [
+            { id: "dirAssets", path: "Assets", x: 32, y: 24 },
+            { id: "dirCharacters", path: "Assets/Characters", x: 32, y: 100 },
+            { id: "dirEnvironments", path: "Assets/Environments", x: 32, y: 176 },
+            { id: "dirAudio", path: "Assets/Audio", x: 32, y: 252 },
+            { id: "dirSource", path: "Source", x: 32, y: 328 }
+        ]
+    }
+
+    // x intentionally omitted here: the delegate below falls back to a
+    // canvasArea.width-relative binding when x is undefined, so freshly
+    // spawned role nodes stay right-aligned even if the canvas hasn't been
+    // laid out yet at model-build time (loaded configs always carry a
+    // concrete x and skip this fallback entirely).
+    function defaultRoleModel() {
+        return [
+            { id: "roleCharacterArtists", principal: "Character Artists", permissionLabel: "Read / Write", y: 40 },
+            { id: "roleEnvironmentArtists", principal: "Environment Artists", permissionLabel: "Read / Write / Lock", y: 140 },
+            { id: "roleQaContractors", principal: "QA Contractors", permissionLabel: "Read", y: 240 }
+        ]
+    }
+
+    function loadInitialState() {
+        if (permissionConfig.hasSavedConfig && permissionConfig.directoryNodes.length > 0) {
+            directoryModel = permissionConfig.directoryNodes
+            roleModel = permissionConfig.roleNodes
+            connections = permissionConfig.connections
+            saveFeedback = "Loaded saved access control config."
+            saveFeedbackColor = Theme.colorTextSecondary
+        } else {
+            resetToDefaults()
+        }
+    }
+
+    function resetToDefaults() {
+        directoryModel = defaultDirectoryModel()
+        roleModel = defaultRoleModel()
+        connections = []
+        saveFeedback = ""
+        lineCanvas.requestPaint()
+    }
+
+    function saveToConfig() {
+        const nodes = []
+        for (var key in nodeRegistry) {
+            const item = nodeRegistry[key]
+            const kind = nodeTypes[key]
+            if (kind === "directory")
+                nodes.push({ id: key, type: kind, path: item.label, x: item.x, y: item.y })
+            else
+                nodes.push({ id: key, type: kind, principal: item.label, permissionLabel: item.permissionLabel, x: item.x, y: item.y })
+        }
+
+        const ok = permissionConfig.saveConfig(nodes, panel.connections)
+        if (ok) {
+            saveFeedback = "Saved to " + permissionConfig.configPath
+            saveFeedbackColor = Theme.colorAccent
+        } else {
+            saveFeedback = permissionConfig.lastError.length > 0
+                ? permissionConfig.lastError
+                : "Failed to save access control config."
+            saveFeedbackColor = Theme.colorNegative
+        }
+    }
+
+    Component.onCompleted: Qt.callLater(panel.loadInitialState)
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.spacingUnit * 2
@@ -70,6 +150,25 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             Button {
+                text: "Reset to defaults"
+                onClicked: panel.resetToDefaults()
+
+                background: Rectangle {
+                    radius: Theme.radiusStandard
+                    color: "transparent"
+                    border.color: Theme.colorBorderLight
+                    border.width: 1
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: Theme.colorTextPrimary
+                    font.pixelSize: Theme.fontSizeButton
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            Button {
                 text: "Clear connections"
                 onClicked: panel.clearConnections()
 
@@ -87,15 +186,42 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                 }
             }
+
+            Button {
+                text: "Save"
+                onClicked: panel.saveToConfig()
+
+                background: Rectangle {
+                    radius: Theme.radiusStandard
+                    color: parent.hovered ? Theme.colorAccentBorder : Theme.colorAccent
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: "#121212"
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeButton
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
         }
 
         Text {
             Layout.fillWidth: true
             text: "Drag a directory's right-side handle onto a role's left-side handle to grant that role access. "
-                  + "UI-only first pass — connections are not persisted or applied to a server config yet (ARCHITECTURE.md §3.3)."
+                  + "Save writes the graph to a Lore server access-control JSON file, which is reloaded automatically next launch (ARCHITECTURE.md §3.3)."
             color: Theme.colorTextSecondary
             font.pixelSize: Theme.fontSizeSmall
             font.italic: true
+            wrapMode: Text.WordWrap
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: panel.saveFeedback
+            visible: panel.saveFeedback.length > 0
+            color: panel.saveFeedbackColor
+            font.pixelSize: Theme.fontSizeSmall
             wrapMode: Text.WordWrap
         }
 
@@ -137,94 +263,40 @@ Rectangle {
                 }
             }
 
-            DirectoryNode {
-                id: dirAssets
-                nodeId: "dirAssets"
-                label: "Assets"
-                x: 32; y: 24
-                highlighted: panel.pendingFrom === nodeId
-                onDragged: lineCanvas.requestPaint()
-                onConnectRequested: (id) => panel.pendingFrom = id
-                onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
-                Component.onCompleted: panel.registerNode(nodeId, dirAssets)
+            Repeater {
+                model: panel.directoryModel
+
+                DirectoryNode {
+                    nodeId: modelData.id
+                    label: modelData.path
+                    x: modelData.x
+                    y: modelData.y
+                    highlighted: panel.pendingFrom === nodeId
+                    onDragged: lineCanvas.requestPaint()
+                    onConnectRequested: (id) => panel.pendingFrom = id
+                    onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
+                    Component.onCompleted: {
+                        panel.registerNode(nodeId, this, "directory")
+                        lineCanvas.requestPaint()
+                    }
+                }
             }
 
-            DirectoryNode {
-                id: dirCharacters
-                nodeId: "dirCharacters"
-                label: "Assets/Characters"
-                x: 32; y: 100
-                highlighted: panel.pendingFrom === nodeId
-                onDragged: lineCanvas.requestPaint()
-                onConnectRequested: (id) => panel.pendingFrom = id
-                onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
-                Component.onCompleted: panel.registerNode(nodeId, dirCharacters)
-            }
+            Repeater {
+                model: panel.roleModel
 
-            DirectoryNode {
-                id: dirEnvironments
-                nodeId: "dirEnvironments"
-                label: "Assets/Environments"
-                x: 32; y: 176
-                highlighted: panel.pendingFrom === nodeId
-                onDragged: lineCanvas.requestPaint()
-                onConnectRequested: (id) => panel.pendingFrom = id
-                onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
-                Component.onCompleted: panel.registerNode(nodeId, dirEnvironments)
-            }
-
-            DirectoryNode {
-                id: dirAudio
-                nodeId: "dirAudio"
-                label: "Assets/Audio"
-                x: 32; y: 252
-                highlighted: panel.pendingFrom === nodeId
-                onDragged: lineCanvas.requestPaint()
-                onConnectRequested: (id) => panel.pendingFrom = id
-                onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
-                Component.onCompleted: panel.registerNode(nodeId, dirAudio)
-            }
-
-            DirectoryNode {
-                id: dirSource
-                nodeId: "dirSource"
-                label: "Source"
-                x: 32; y: 328
-                highlighted: panel.pendingFrom === nodeId
-                onDragged: lineCanvas.requestPaint()
-                onConnectRequested: (id) => panel.pendingFrom = id
-                onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
-                Component.onCompleted: panel.registerNode(nodeId, dirSource)
-            }
-
-            RoleNode {
-                id: roleCharacterArtists
-                nodeId: "roleCharacterArtists"
-                label: "Character Artists"
-                permissionLabel: "Read / Write"
-                x: canvasArea.width - 232; y: 40
-                onDragged: lineCanvas.requestPaint()
-                Component.onCompleted: panel.registerNode(nodeId, roleCharacterArtists)
-            }
-
-            RoleNode {
-                id: roleEnvironmentArtists
-                nodeId: "roleEnvironmentArtists"
-                label: "Environment Artists"
-                permissionLabel: "Read / Write / Lock"
-                x: canvasArea.width - 232; y: 140
-                onDragged: lineCanvas.requestPaint()
-                Component.onCompleted: panel.registerNode(nodeId, roleEnvironmentArtists)
-            }
-
-            RoleNode {
-                id: roleQaContractors
-                nodeId: "roleQaContractors"
-                label: "QA Contractors"
-                permissionLabel: "Read"
-                x: canvasArea.width - 232; y: 240
-                onDragged: lineCanvas.requestPaint()
-                Component.onCompleted: panel.registerNode(nodeId, roleQaContractors)
+                RoleNode {
+                    nodeId: modelData.id
+                    label: modelData.principal
+                    permissionLabel: modelData.permissionLabel
+                    x: modelData.x !== undefined ? modelData.x : Math.max(232, canvasArea.width - 232)
+                    y: modelData.y
+                    onDragged: lineCanvas.requestPaint()
+                    Component.onCompleted: {
+                        panel.registerNode(nodeId, this, "role")
+                        lineCanvas.requestPaint()
+                    }
+                }
             }
         }
     }
