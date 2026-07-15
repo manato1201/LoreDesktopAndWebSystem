@@ -1,28 +1,16 @@
 #include "RepositoryListModel.h"
+#include "ApiClient.h"
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
 
 RepositoryListModel::RepositoryListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
-    m_repositories = {
-        { "starforge-vfx", "starforge-vfx", "Nebula Studios",
-          "Particle FX library and Niagara modules for the Starforge campaign.",
-          "2h ago", "184 GB", 3, "private" },
-        { "hollow-keep-env", "hollow-keep-env", "Nebula Studios",
-          "Environment art, terrain chunks, and lighting scenarios for Hollow Keep.",
-          "6h ago", "512 GB", 0, "private" },
-        { "character-rigs", "character-rigs", "Nebula Studios",
-          "Shared character skeletons, rigs, and animation retarget presets.",
-          "1d ago", "76 GB", 1, "internal" },
-        { "audio-master", "audio-master", "Nebula Studios",
-          "Master audio sessions, foley captures, and mix stems.",
-          "2d ago", "212 GB", 0, "private" },
-        { "cinematics-s2", "cinematics-s2", "Nebula Studios",
-          "Season 2 cinematic sequences, previs, and camera capture data.",
-          "3d ago", "1.1 TB", 5, "private" },
-        { "shared-materials", "shared-materials", "Nebula Studios",
-          "Cross-project material library, substance graphs, and texture sets.",
-          "5d ago", "98 GB", 0, "public" },
-    };
 }
 
 int RepositoryListModel::rowCount(const QModelIndex &parent) const
@@ -72,4 +60,62 @@ QHash<int, QByteArray> RepositoryListModel::roleNames() const
         { LockedFileCountRole, "lockedFileCount" },
         { VisibilityRole, "visibility" },
     };
+}
+
+void RepositoryListModel::refresh()
+{
+    setErrorMessage(QString());
+    setBusy(true);
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories"));
+    QNetworkReply *reply = ApiClient::networkManager().get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        setBusy(false);
+
+        if (reply->error() != QNetworkReply::NoError) {
+            setErrorMessage(reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        const QJsonArray array = QJsonDocument::fromJson(reply->readAll()).array();
+        QList<RepositoryEntry> entries;
+        entries.reserve(array.size());
+        for (const QJsonValue &value : array) {
+            const QJsonObject obj = value.toObject();
+            RepositoryEntry entry;
+            entry.slug = obj.value("slug").toString();
+            entry.name = obj.value("name").toString();
+            entry.organization = obj.value("organization").toString();
+            entry.description = obj.value("description").toString();
+            entry.updatedAt = obj.value("updatedAt").toString();
+            entry.sizeLabel = obj.value("sizeLabel").toString();
+            entry.lockedFileCount = obj.value("lockedFileCount").toInt();
+            entry.visibility = obj.value("visibility").toString();
+            entries.append(entry);
+        }
+
+        beginResetModel();
+        m_repositories = entries;
+        endResetModel();
+        emit countChanged();
+
+        reply->deleteLater();
+    });
+}
+
+void RepositoryListModel::setBusy(bool busy)
+{
+    if (m_busy == busy)
+        return;
+    m_busy = busy;
+    emit busyChanged();
+}
+
+void RepositoryListModel::setErrorMessage(const QString &message)
+{
+    if (m_errorMessage == message)
+        return;
+    m_errorMessage = message;
+    emit errorMessageChanged();
 }
