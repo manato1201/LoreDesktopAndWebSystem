@@ -14,14 +14,18 @@ Rectangle {
 
     property bool hovered: false
 
+    signal clicked()
+
     color: hovered ? Theme.colorSurfaceElevated : Theme.colorSurface
     radius: Theme.radiusComfortable
 
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
         onEntered: card.hovered = true
         onExited: card.hovered = false
+        onClicked: card.clicked()
     }
 
     Column {
