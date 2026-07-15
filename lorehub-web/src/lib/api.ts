@@ -79,6 +79,14 @@ export function getRepository(
   return apiGetOrNull(`/api/repositories/${slug}`, cookie);
 }
 
+export function createRepository(data: {
+  name: string;
+  description: string;
+  visibility: Repository["visibility"];
+}): Promise<Repository | null> {
+  return apiSend("POST", "/api/repositories", data);
+}
+
 export function getTree(
   slug: string,
   cookie?: string,

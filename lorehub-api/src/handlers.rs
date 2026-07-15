@@ -26,6 +26,14 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
+}
+
 /// Resolves the session cookie to the authenticated `OrgMember` and inserts
 /// it into request extensions so downstream handlers can pull it out via
 /// `Extension<OrgMember>` instead of re-checking the session themselves.
@@ -127,6 +135,89 @@ pub async fn get_repository(State(ctx): State<SharedState>, Path(slug): Path<Str
     }
 }
 
+/// Kebab-cases an arbitrary repository name into an ASCII slug: lowercases
+/// alphanumerics, collapses any run of other characters into a single `-`,
+/// and never produces a leading/trailing dash.
+fn slugify(name: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(ch.to_ascii_lowercase());
+            pending_dash = false;
+        } else {
+            pending_dash = true;
+        }
+    }
+    if slug.is_empty() {
+        "repository".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Appends `-2`, `-3`, ... to `base` until it no longer collides with an
+/// existing repository slug.
+fn unique_slug(base: &str, existing: &[Repository]) -> String {
+    if !existing.iter().any(|r| r.slug == base) {
+        return base.to_string();
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if !existing.iter().any(|r| r.slug == candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateRepositoryRequest {
+    pub name: String,
+    pub description: String,
+    pub visibility: Visibility,
+}
+
+pub async fn create_repository(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Json(body): Json<CreateRepositoryRequest>,
+) -> Response {
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return bad_request("name is required");
+    }
+
+    let mut state = ctx.write().await;
+    let slug = unique_slug(&slugify(&name), &state.repositories);
+
+    let repository = Repository {
+        slug: slug.clone(),
+        name,
+        organization: "Nebula Studios".to_string(),
+        description: body.description.trim().to_string(),
+        updated_at: "just now".to_string(),
+        size_label: "0 B".to_string(),
+        locked_file_count: 0,
+        visibility: body.visibility,
+    };
+    state.repositories.push(repository.clone());
+
+    state.record_audit(&user.name, "created repository", &slug);
+
+    let repositories = state.repositories.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    (StatusCode::CREATED, Json(repository)).into_response()
+}
+
 pub async fn get_file_content(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
@@ -192,7 +283,11 @@ pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) 
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    Json(state.tree.clone()).into_response()
+    if state.seeded_repo_slugs.contains(&slug) {
+        Json(state.tree.clone()).into_response()
+    } else {
+        Json(Vec::<TreeNode>::new()).into_response()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,7 +335,11 @@ pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<Strin
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    Json(state.commits.clone()).into_response()
+    if state.seeded_repo_slugs.contains(&slug) {
+        Json(state.commits.clone()).into_response()
+    } else {
+        Json(Vec::<Commit>::new()).into_response()
+    }
 }
 
 pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
@@ -248,7 +347,11 @@ pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<Stri
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    Json(state.branches.clone()).into_response()
+    if state.seeded_repo_slugs.contains(&slug) {
+        Json(state.branches.clone()).into_response()
+    } else {
+        Json(Vec::<Branch>::new()).into_response()
+    }
 }
 
 pub async fn get_commit(
