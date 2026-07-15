@@ -7,11 +7,14 @@ export function RepoTabs({ slug }: { slug: string }) {
   const pathname = usePathname();
   const base = `/repositories/${slug}`;
   const commitsHref = `${base}/commits`;
+  const settingsHref = `${base}/settings`;
   const isCommits = pathname.startsWith(commitsHref);
+  const isSettings = pathname.startsWith(settingsHref);
 
   const tabs = [
-    { href: base, label: "Code", active: !isCommits },
+    { href: base, label: "Code", active: !isCommits && !isSettings },
     { href: commitsHref, label: "Commits", active: isCommits },
+    { href: settingsHref, label: "Settings", active: isSettings },
   ];
 
   return (

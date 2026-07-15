@@ -218,6 +218,80 @@ pub async fn create_repository(
     (StatusCode::CREATED, Json(repository)).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateRepositoryRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub visibility: Option<Visibility>,
+}
+
+pub async fn update_repository(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<UpdateRepositoryRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    let Some(repo) = state.repositories.iter_mut().find(|r| r.slug == slug) else {
+        return not_found("repository not found");
+    };
+
+    if let Some(name) = body.name {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return bad_request("name cannot be empty");
+        }
+        repo.name = name;
+    }
+    if let Some(description) = body.description {
+        repo.description = description.trim().to_string();
+    }
+    if let Some(visibility) = body.visibility {
+        repo.visibility = visibility;
+    }
+    repo.updated_at = "just now".to_string();
+    let repo = repo.clone();
+
+    state.record_audit(&user.name, "updated settings for", &slug);
+
+    let repositories = state.repositories.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(repo).into_response()
+}
+
+pub async fn delete_repository(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+) -> Response {
+    let mut state = ctx.write().await;
+    let before = state.repositories.len();
+    state.repositories.retain(|r| r.slug != slug);
+    if state.repositories.len() == before {
+        return not_found("repository not found");
+    }
+    state.seeded_repo_slugs.remove(&slug);
+    state.pull_requests.retain(|pr| pr.repo_slug != slug);
+
+    state.record_audit(&user.name, "deleted repository", &slug);
+
+    let repositories = state.repositories.clone();
+    let seeded_repo_slugs = state.seeded_repo_slugs.clone();
+    let pull_requests = state.pull_requests.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
+    crate::db::save_blob(&ctx.db, "seeded_repo_slugs", &seeded_repo_slugs).await;
+    crate::db::save_blob(&ctx.db, "pull_requests", &pull_requests).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 pub async fn get_file_content(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
