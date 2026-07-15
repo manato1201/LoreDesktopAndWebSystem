@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -27,9 +27,19 @@ qt_add_qml_module(LoreForgeClient
         qml/Main.qml
         qml/Theme.qml
         qml/RepositoryCard.qml
+        qml/PrimaryButton.qml
+        qml/LoginScreen.qml
+        qml/RepositoryListScreen.qml
+        qml/RepositoryWorkspaceScreen.qml
     SOURCES
+        src/ApiClient.h
+        src/ApiClient.cpp
+        src/AuthController.h
+        src/AuthController.cpp
         src/RepositoryListModel.h
         src/RepositoryListModel.cpp
+        src/RepositoryTreeModel.h
+        src/RepositoryTreeModel.cpp
 )
 
 target_include_directories(LoreForgeClient
@@ -44,6 +54,7 @@ target_link_libraries(LoreForgeClient
         Qt6::Qml
         Qt6::Quick
         Qt6::QuickControls2
+        Qt6::Network
 )
 
 set_target_properties(LoreForgeClient PROPERTIES
