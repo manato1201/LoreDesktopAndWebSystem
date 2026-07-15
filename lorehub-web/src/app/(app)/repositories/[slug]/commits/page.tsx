@@ -17,5 +17,13 @@ export default async function CommitsPage(
     notFound();
   }
 
+  if (commits.length === 0) {
+    return (
+      <p className="text-sm text-text-secondary">
+        No commits yet. Push to this repository to see its history here.
+      </p>
+    );
+  }
+
   return <BranchGraph repoSlug={slug} commits={commits} branches={branches} />;
 }

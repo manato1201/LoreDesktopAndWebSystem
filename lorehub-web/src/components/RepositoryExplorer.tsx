@@ -6,6 +6,7 @@ import type { TreeNode } from "@/lib/types";
 import { findNode } from "@/lib/tree-utils";
 import { FileDetail } from "./FileDetail";
 import { PlaceholderScreen } from "./PlaceholderScreen";
+import { ReadmePreview } from "./ReadmePreview";
 import { RepositoryIcon } from "./icons";
 import { TreeView } from "./TreeView";
 
@@ -22,6 +23,11 @@ export function RepositoryExplorer({
   const selectedNode = selectedPath ? findNode(tree, selectedPath) : undefined;
   const selectedFile =
     selectedNode && selectedNode.kind !== "directory" ? selectedNode : null;
+
+  const readmeNode = tree.find(
+    (node) =>
+      node.kind !== "directory" && node.name.toLowerCase() === "readme.md",
+  );
 
   const handleToggleLock = async () => {
     if (!selectedFile) return;
@@ -40,11 +46,17 @@ export function RepositoryExplorer({
           selectedFile ? "hidden" : "block"
         }`}
       >
-        <TreeView
-          nodes={tree}
-          selectedPath={selectedPath}
-          onSelect={setSelectedPath}
-        />
+        {tree.length > 0 ? (
+          <TreeView
+            nodes={tree}
+            selectedPath={selectedPath}
+            onSelect={setSelectedPath}
+          />
+        ) : (
+          <p className="p-3 text-xs text-text-secondary">
+            No files yet. Push to this repository to see its file tree here.
+          </p>
+        )}
       </div>
 
       <div
@@ -67,6 +79,14 @@ export function RepositoryExplorer({
               onToggleLock={handleToggleLock}
             />
           </>
+        ) : readmeNode ? (
+          <ReadmePreview repoSlug={repoSlug} path={readmeNode.path} />
+        ) : tree.length === 0 ? (
+          <PlaceholderScreen
+            icon={RepositoryIcon}
+            title="This repository is empty"
+            description="Push files to this repository to see its file tree and README here."
+          />
         ) : (
           <PlaceholderScreen
             icon={RepositoryIcon}
