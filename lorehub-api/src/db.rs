@@ -66,8 +66,16 @@ async fn load_blob<T: DeserializeOwned>(pool: &SqlitePool, key: &str) -> Option<
 /// `None` means this is a first run (no prior save) — the caller should
 /// seed fresh demo data and call [`save_all`].
 pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
+    let repositories: Vec<crate::models::Repository> = load_blob(pool, "repositories").await?;
+    // Older saves predate `seeded_repo_slugs` — treat every already-persisted
+    // repository as seeded so existing repos keep showing the demo tree.
+    let seeded_repo_slugs: std::collections::HashSet<String> = load_blob(pool, "seeded_repo_slugs")
+        .await
+        .unwrap_or_else(|| repositories.iter().map(|r| r.slug.clone()).collect());
+
     Some(AppState {
-        repositories: load_blob(pool, "repositories").await?,
+        repositories,
+        seeded_repo_slugs,
         tree: load_blob(pool, "tree").await.unwrap_or_default(),
         file_contents: load_blob(pool, "file_contents").await.unwrap_or_default(),
         image_content: load_blob(pool, "image_content").await.unwrap_or_default(),
@@ -95,6 +103,7 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
 
 pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "repositories", &state.repositories).await;
+    save_blob(pool, "seeded_repo_slugs", &state.seeded_repo_slugs).await;
     save_blob(pool, "tree", &state.tree).await;
     save_blob(pool, "file_contents", &state.file_contents).await;
     save_blob(pool, "image_content", &state.image_content).await;

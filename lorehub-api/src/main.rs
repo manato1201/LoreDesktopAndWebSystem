@@ -49,7 +49,10 @@ async fn main() {
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(handlers::logout))
         .route("/api/auth/me", get(handlers::me))
-        .route("/api/repositories", get(handlers::list_repositories))
+        .route(
+            "/api/repositories",
+            get(handlers::list_repositories).post(handlers::create_repository),
+        )
         .route("/api/repositories/{slug}", get(handlers::get_repository))
         .route("/api/repositories/{slug}/tree", get(handlers::get_tree))
         .route(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
@@ -40,6 +40,13 @@ impl AppContext {
 
 pub struct AppState {
     pub repositories: Vec<Repository>,
+    /// Slugs of repositories that have seeded tree/commit/branch demo data.
+    /// `tree`/`commits`/`branches` below are a single shared demo dataset
+    /// (not keyed per-repository) reused by every seeded repo; repos
+    /// created later via `POST /api/repositories` are intentionally left
+    /// out of this set so their Code/Commits tabs report an empty (but
+    /// valid, non-404) tree/history instead of inheriting the demo data.
+    pub seeded_repo_slugs: HashSet<String>,
     pub tree: Vec<TreeNode>,
     pub file_contents: HashMap<String, String>,
     pub image_content: HashMap<String, String>,
@@ -170,6 +177,8 @@ pub fn seed() -> AppState {
             visibility: Visibility::Public,
         },
     ];
+
+    let seeded_repo_slugs: HashSet<String> = repositories.iter().map(|r| r.slug.clone()).collect();
 
     let tree = vec![
         TreeNode::Directory {
@@ -682,6 +691,7 @@ pub fn seed() -> AppState {
 
     AppState {
         repositories,
+        seeded_repo_slugs,
         tree,
         file_contents,
         image_content,
