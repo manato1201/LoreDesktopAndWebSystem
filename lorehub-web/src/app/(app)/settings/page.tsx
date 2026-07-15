@@ -3,14 +3,16 @@ import { MembersTable } from "@/components/MembersTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StorageUsageCard } from "@/components/StorageUsageCard";
 import { getAuditLog, getMembers, getStorage } from "@/lib/api";
+import { getSessionCookieHeader } from "@/lib/auth-server";
 
 export const metadata = { title: "Settings · LoreHub" };
 
 export default async function SettingsPage() {
+  const cookie = await getSessionCookieHeader();
   const [members, storage, auditLog] = await Promise.all([
-    getMembers(),
-    getStorage(),
-    getAuditLog(),
+    getMembers(cookie),
+    getStorage(cookie),
+    getAuditLog(cookie),
   ]);
 
   return (
