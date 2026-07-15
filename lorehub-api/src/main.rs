@@ -37,7 +37,13 @@ async fn main() {
     // requires an explicit origin (no `Any`) per the CORS spec.
     let cors = CorsLayer::new()
         .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true);
 
@@ -53,7 +59,12 @@ async fn main() {
             "/api/repositories",
             get(handlers::list_repositories).post(handlers::create_repository),
         )
-        .route("/api/repositories/{slug}", get(handlers::get_repository))
+        .route(
+            "/api/repositories/{slug}",
+            get(handlers::get_repository)
+                .patch(handlers::update_repository)
+                .delete(handlers::delete_repository),
+        )
         .route("/api/repositories/{slug}/tree", get(handlers::get_tree))
         .route(
             "/api/repositories/{slug}/tree/lock",

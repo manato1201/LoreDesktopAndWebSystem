@@ -68,6 +68,19 @@ async function apiSend<T>(
   return res.json() as Promise<T>;
 }
 
+async function apiDelete(path: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    throw new Error(`DELETE ${path} failed: ${res.status}`);
+  }
+  return true;
+}
+
 export function getRepositories(cookie?: string): Promise<Repository[]> {
   return apiGet("/api/repositories", cookie);
 }
@@ -85,6 +98,21 @@ export function createRepository(data: {
   visibility: Repository["visibility"];
 }): Promise<Repository | null> {
   return apiSend("POST", "/api/repositories", data);
+}
+
+export function updateRepository(
+  slug: string,
+  data: Partial<{
+    name: string;
+    description: string;
+    visibility: Repository["visibility"];
+  }>,
+): Promise<Repository | null> {
+  return apiSend("PATCH", `/api/repositories/${slug}`, data);
+}
+
+export function deleteRepository(slug: string): Promise<boolean> {
+  return apiDelete(`/api/repositories/${slug}`);
 }
 
 export function getTree(
