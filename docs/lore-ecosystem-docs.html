@@ -1,0 +1,773 @@
+<title>Lore Ecosystem — Architecture Documentation</title>
+<meta name="description" content="LoreHub / LoreForge Client / LoreForge Server Admin — architecture, data flow, and build status.">
+<style>
+  :root {
+    --bg-base: #f5f6f3;
+    --bg-surface: #ffffff;
+    --bg-interactive: #eef0ec;
+    --bg-elevated: #e4e7e1;
+    --accent: #14a34e;
+    --accent-border: #0f8a41;
+    --accent-soft: rgba(20, 163, 78, 0.12);
+    --text-primary: #14171a;
+    --text-secondary: #5a615c;
+    --border: #d5d9d1;
+    --negative: #c23b4a;
+    --negative-soft: rgba(194, 59, 74, 0.1);
+    --warning: #a3660a;
+    --warning-soft: rgba(163, 102, 10, 0.12);
+    --announcement: #2c6fd1;
+    --announcement-soft: rgba(44, 111, 209, 0.1);
+    --shadow: 0 1px 2px rgba(20, 23, 20, 0.04), 0 8px 24px -12px rgba(20, 23, 20, 0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-base: #121212;
+      --bg-surface: #181818;
+      --bg-interactive: #1f1f1f;
+      --bg-elevated: #252525;
+      --accent: #1ed760;
+      --accent-border: #1db954;
+      --accent-soft: rgba(30, 215, 96, 0.14);
+      --text-primary: #ffffff;
+      --text-secondary: #b3b3b3;
+      --border: #3a3a3a;
+      --negative: #f3727f;
+      --negative-soft: rgba(243, 114, 127, 0.14);
+      --warning: #ffa42b;
+      --warning-soft: rgba(255, 164, 43, 0.14);
+      --announcement: #539df5;
+      --announcement-soft: rgba(83, 157, 245, 0.14);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px -16px rgba(0, 0, 0, 0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg-base: #121212;
+    --bg-surface: #181818;
+    --bg-interactive: #1f1f1f;
+    --bg-elevated: #252525;
+    --accent: #1ed760;
+    --accent-border: #1db954;
+    --accent-soft: rgba(30, 215, 96, 0.14);
+    --text-primary: #ffffff;
+    --text-secondary: #b3b3b3;
+    --border: #3a3a3a;
+    --negative: #f3727f;
+    --negative-soft: rgba(243, 114, 127, 0.14);
+    --warning: #ffa42b;
+    --warning-soft: rgba(255, 164, 43, 0.14);
+    --announcement: #539df5;
+    --announcement-soft: rgba(83, 157, 245, 0.14);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 32px -16px rgba(0, 0, 0, 0.6);
+  }
+  :root[data-theme="light"] {
+    --bg-base: #f5f6f3;
+    --bg-surface: #ffffff;
+    --bg-interactive: #eef0ec;
+    --bg-elevated: #e4e7e1;
+    --accent: #14a34e;
+    --accent-border: #0f8a41;
+    --accent-soft: rgba(20, 163, 78, 0.12);
+    --text-primary: #14171a;
+    --text-secondary: #5a615c;
+    --border: #d5d9d1;
+    --negative: #c23b4a;
+    --negative-soft: rgba(194, 59, 74, 0.1);
+    --warning: #a3660a;
+    --warning-soft: rgba(163, 102, 10, 0.12);
+    --announcement: #2c6fd1;
+    --announcement-soft: rgba(44, 111, 209, 0.1);
+    --shadow: 0 1px 2px rgba(20, 23, 20, 0.04), 0 8px 24px -12px rgba(20, 23, 20, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+  }
+  ::selection { background: var(--accent-soft); }
+  a { color: var(--accent); }
+  code {
+    font-family: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+    background: var(--bg-interactive);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    max-width: 1180px;
+    margin: 0 auto;
+    gap: 48px;
+  }
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    nav.toc { display: none; }
+  }
+
+  header.masthead {
+    border-bottom: 1px solid var(--border);
+    padding: 28px 24px 24px;
+  }
+  .masthead-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .brand {
+    font-family: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+  .brand strong { color: var(--text-primary); }
+  h1.title {
+    font-family: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+    font-size: clamp(24px, 3vw, 32px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 6px 0 4px;
+    text-wrap: balance;
+  }
+  .subtitle {
+    color: var(--text-secondary);
+    font-size: 15px;
+    max-width: 60ch;
+  }
+  .status-pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  nav.toc {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    padding: 32px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+  }
+  nav.toc .toc-label {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+  nav.toc a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13.5px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border-left: 2px solid transparent;
+  }
+  nav.toc a:hover { color: var(--text-primary); background: var(--bg-interactive); }
+
+  main { padding: 32px 24px 96px; min-width: 0; }
+  section { margin-bottom: 64px; scroll-margin-top: 24px; }
+  section > .eyebrow {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  section > h2 {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  section > .lede {
+    color: var(--text-secondary);
+    max-width: 68ch;
+    margin: 0 0 24px;
+  }
+  section > p { max-width: 68ch; }
+
+  .card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+  }
+
+  /* --- architecture diagram --- */
+  .arch-wrap { overflow-x: auto; padding-bottom: 4px; }
+  .arch-diagram {
+    min-width: 720px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    padding: 8px;
+  }
+  .arch-box {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    position: relative;
+  }
+  .arch-box.client { border-color: var(--accent-border); box-shadow: 0 0 0 1px var(--accent-soft); }
+  .arch-box .k {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+  .arch-box .name { font-weight: 600; font-size: 14.5px; margin: 3px 0 4px; }
+  .arch-box .stack { font-size: 12px; color: var(--text-secondary); font-family: "Cascadia Code", Consolas, monospace; }
+  .arch-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; }
+  .arch-arrow {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .arch-arrow::before, .arch-arrow::after {
+    content: "";
+    height: 1px;
+    width: 48px;
+    background: var(--border);
+  }
+  .arch-core {
+    grid-column: 1 / -1;
+    background: var(--bg-interactive);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .arch-core .label { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--text-secondary); }
+  .chip {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    white-space: nowrap;
+  }
+
+  /* --- component cards --- */
+  .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .comp-card h3 { margin: 0 0 4px; font-size: 16px; }
+  .comp-card .role { color: var(--text-secondary); font-size: 13px; margin-bottom: 12px; }
+  .comp-card ul { margin: 0; padding-left: 18px; font-size: 13.5px; }
+  .comp-card li { margin-bottom: 4px; }
+  .comp-card .tag { display: inline-block; font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-border); margin-bottom: 10px; }
+
+  /* --- sequence flow --- */
+  .flow { display: flex; flex-direction: column; gap: 0; border-left: 2px solid var(--border); padding-left: 20px; margin-left: 8px; }
+  .flow-step { position: relative; padding: 0 0 22px; }
+  .flow-step:last-child { padding-bottom: 0; }
+  .flow-step::before {
+    content: "";
+    position: absolute;
+    left: -25.5px;
+    top: 3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg-base);
+  }
+  .flow-step .who { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--accent-border); text-transform: uppercase; letter-spacing: 0.06em; }
+  .flow-step .what { font-size: 14px; margin-top: 2px; }
+  .flow-step .note { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
+
+  /* --- data model --- */
+  .model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .model-card { padding: 14px 16px; }
+  .model-card .name { font-family: "Cascadia Code", Consolas, monospace; font-weight: 600; font-size: 13.5px; color: var(--accent-border); }
+  .model-card ul { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; font-family: "Cascadia Code", Consolas, monospace; color: var(--text-secondary); }
+  .model-card li { padding: 2px 0; }
+
+  /* --- sitemap tree --- */
+  .tree { font-size: 13.5px; }
+  .tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--border); }
+  .tree > ul { padding-left: 0; border-left: none; }
+  .tree li { position: relative; padding: 5px 0 5px 18px; }
+  .tree li::before { content: ""; position: absolute; left: 0; top: 15px; width: 14px; height: 1px; background: var(--border); }
+  .tree .path { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; color: var(--accent-border); }
+  .tree .desc { color: var(--text-secondary); }
+
+  /* --- token swatches --- */
+  .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .swatch { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface); }
+  .swatch-fill { height: 52px; }
+  .swatch-meta { padding: 8px 10px; font-family: "Cascadia Code", Consolas, monospace; }
+  .swatch-meta .role { font-size: 11px; color: var(--text-secondary); }
+  .swatch-meta .hex { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* --- timeline --- */
+  .timeline-wrap { overflow-x: auto; padding-bottom: 8px; }
+  .timeline { display: flex; gap: 12px; min-width: 900px; }
+  .phase {
+    flex: 1;
+    min-width: 150px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    position: relative;
+  }
+  .phase::after {
+    content: "";
+    position: absolute;
+    right: -13px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    border-top: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    transform: translateY(-50%) rotate(45deg);
+  }
+  .phase:last-child::after { display: none; }
+  .phase .n { font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; color: var(--accent-border); }
+  .phase .t { font-weight: 600; font-size: 13.5px; margin: 3px 0 8px; }
+  .phase ul { margin: 0; padding-left: 16px; font-size: 12px; color: var(--text-secondary); }
+  .phase li { margin-bottom: 3px; }
+  .phase.current { border-color: var(--accent-border); box-shadow: 0 0 0 1px var(--accent-soft); }
+
+  /* --- agent workflow --- */
+  .agent-flow { display: grid; grid-template-columns: 1fr; gap: 10px; max-width: 640px; }
+  .agent-row { display: flex; align-items: center; gap: 12px; }
+  .agent-row .from { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+  .agent-row .arrow { color: var(--border); flex: 1; height: 1px; background: var(--border); position: relative; min-width: 24px; }
+  .agent-row .to { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; font-size: 13px; white-space: nowrap; }
+
+  /* --- status checklist --- */
+  .status-list { display: flex; flex-direction: column; gap: 8px; }
+  .status-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border); }
+  .status-row .txt { font-size: 13.5px; flex: 1; }
+  .badge { font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  .badge.done { background: var(--accent-soft); color: var(--accent-border); }
+  .badge.progress { background: var(--warning-soft); color: var(--warning); }
+  .badge.pending { background: var(--bg-interactive); color: var(--text-secondary); }
+
+  table.api { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.api th, table.api td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  table.api th { font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+  table.api td.method { font-family: "Cascadia Code", Consolas, monospace; font-weight: 600; }
+  table.api td.path { font-family: "Cascadia Code", Consolas, monospace; color: var(--accent-border); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 28px 24px 48px;
+  }
+  footer .inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+  }
+  footer a { color: var(--text-secondary); }
+  footer a:hover { color: var(--accent); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    section { animation: fade-in 0.4s ease both; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div>
+      <div class="brand"><strong>Lore</strong> Ecosystem / docs</div>
+      <h1 class="title">Architecture &amp; Implementation Reference</h1>
+      <p class="subtitle">LoreHub(Web)・LoreForge Client・LoreForge Server Admin — 3コンポーネントの設計・データフロー・実装状況を1ページに集約。</p>
+    </div>
+    <div class="status-pill-row">
+      <span class="chip mono">Rust / Axum</span>
+      <span class="chip mono">Next.js 16</span>
+      <span class="chip mono">Qt6 / QML</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="toc" aria-label="目次">
+    <div class="toc-label">Contents</div>
+    <a href="#overview">概要</a>
+    <a href="#architecture">システム構成図</a>
+    <a href="#components">コンポーネント詳細</a>
+    <a href="#auth">認証シーケンス</a>
+    <a href="#data-model">データモデル</a>
+    <a href="#sitemap">LoreHub サイトマップ</a>
+    <a href="#api">API 一覧</a>
+    <a href="#tokens">デザイントークン</a>
+    <a href="#timeline">開発の歩み</a>
+    <a href="#agents">並行エージェント開発</a>
+    <a href="#status">現在の状態</a>
+  </nav>
+
+  <main>
+
+    <section id="overview">
+      <div class="eyebrow">01 / Overview</div>
+      <h2>架空の巨大バイナリVCS「Lore」を中心としたエコシステム</h2>
+      <p class="lede">GitHubに相当する<strong>LoreHub</strong>(Web)、Forkに相当する<strong>LoreForge Client</strong>(デスクトップ)、Docker Desktopに相当する<strong>LoreForge Server Admin</strong>(デスクトップ)の3つを、単一のデザイントークンと単一のRustバックエンドで束ねている。</p>
+      <div class="grid-3">
+        <div class="card comp-card">
+          <span class="tag">Web</span>
+          <h3>LoreHub</h3>
+          <div class="role">ブラウザでリポジトリ閲覧・PRレビュー・権限管理</div>
+        </div>
+        <div class="card comp-card">
+          <span class="tag">Desktop</span>
+          <h3>LoreForge Client</h3>
+          <div class="role">ローカルでのリポジトリ操作・ファイルロック・プレビュー</div>
+        </div>
+        <div class="card comp-card">
+          <span class="tag">Desktop</span>
+          <h3>LoreForge Server Admin</h3>
+          <div class="role">Loreサーバー環境をGUIから1クリック構築・権限設計</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="eyebrow">02 / System</div>
+      <h2>システム構成図</h2>
+      <p class="lede">Web版とデスクトップ版のClientは同一の <code>lorehub-api</code> を共有しており、片方での変更がもう片方にリアルタイムで反映される(検証済み)。</p>
+      <div class="card">
+        <div class="arch-wrap">
+          <div class="arch-diagram">
+            <div class="arch-box client">
+              <div class="k">Browser</div>
+              <div class="name">LoreHub Web</div>
+              <div class="stack">Next.js 16 / React / Tailwind v4</div>
+            </div>
+            <div class="arch-box client">
+              <div class="k">Desktop</div>
+              <div class="name">LoreForge Client</div>
+              <div class="stack">Qt6 / QML / C++20</div>
+            </div>
+            <div class="arch-box client">
+              <div class="k">Desktop</div>
+              <div class="name">LoreForge Server Admin</div>
+              <div class="stack">Qt6 / QML / C++20</div>
+            </div>
+
+            <div class="arch-row">
+              <div class="arch-arrow">fetch (Cookie) / QNetworkAccessManager</div>
+            </div>
+
+            <div class="arch-core">
+              <div>
+                <div class="label">lorehub-api</div>
+                <div class="name" style="margin-top:2px">Handlers (Axum)</div>
+              </div>
+              <div class="label">auth · repos · tree · commits · pulls · access-control · org</div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <span class="chip">RwLock&lt;AppState&gt;</span>
+                <span class="chip">SQLite kv_store</span>
+              </div>
+            </div>
+
+            <div class="arch-row">
+              <div class="arch-arrow">QProcess (Docker制御・実装中)</div>
+            </div>
+            <div class="arch-box" style="grid-column: 3 / 4;">
+              <div class="k">Infra</div>
+              <div class="name">Docker</div>
+              <div class="stack">MinIO + Lore Server</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="components">
+      <div class="eyebrow">03 / Components</div>
+      <h2>コンポーネント詳細</h2>
+      <div class="grid-3">
+        <div class="card comp-card">
+          <h3>LoreHub (Web)</h3>
+          <div class="role">Next.js 16 App Router + Rust(Axum)</div>
+          <ul>
+            <li>リポジトリ一覧・ツリー・ファイル詳細</li>
+            <li>画像 / 音声 / Three.js 3Dプレビュー</li>
+            <li>コミット履歴(横型ブランチグラフ)</li>
+            <li>PR差分レビュー・コメント</li>
+            <li>アクセス制御・組織設定</li>
+            <li><strong>リポジトリ設定(rename・削除)</strong></li>
+          </ul>
+        </div>
+        <div class="card comp-card">
+          <h3>LoreForge Client</h3>
+          <div class="role">Qt6 / QML / C++20</div>
+          <ul>
+            <li>ログイン(セッションCookie)</li>
+            <li>リポジトリ一覧(実データ取得)</li>
+            <li>ファイルツリー + ロック/アンロック</li>
+            <li>グローバル検索</li>
+            <li>コミット履歴ビュー <span class="badge progress">進行中</span></li>
+            <li>今後: コミット/ブランチ/push・pull</li>
+          </ul>
+        </div>
+        <div class="card comp-card">
+          <h3>LoreForge Server Admin</h3>
+          <div class="role">Qt6 / QML / C++20</div>
+          <ul>
+            <li>環境ステータスパネル</li>
+            <li>ノードエディタ風の権限設定UI</li>
+            <li>権限設定の永続化(JSON) <span class="badge done">完了</span></li>
+            <li>今後: Docker実接続(MinIO/Lore Server起動)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="auth">
+      <div class="eyebrow">04 / Data Flow</div>
+      <h2>認証シーケンス</h2>
+      <p class="lede">Server Componentはブラウザとは別プロセスのため、受信したCookieを<strong>手動でAPIリクエストへ転送</strong>する必要がある — この非対称性がこのアーキテクチャの要点。</p>
+      <div class="card">
+        <div class="flow">
+          <div class="flow-step">
+            <div class="who">Browser → Web</div>
+            <div class="what">/login で email / password を送信(Client Component)</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Web → API</div>
+            <div class="what"><code>POST /api/auth/login</code>(credentials: include)</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">API</div>
+            <div class="what">argon2でパスワード検証 → セッション発行</div>
+            <div class="note">Set-Cookie: lorehub_token(HttpOnly, SameSite=Lax, 7日)</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Browser → Web(SSR)</div>
+            <div class="what">以降のページ遷移: <code>GET /repositories/xxx</code></div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Web(Server Component)</div>
+            <div class="what"><code>cookies()</code> からセッションCookieを取得</div>
+            <div class="note">ブラウザのCookieジャーとは無関係な別プロセス</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Web → API</div>
+            <div class="what">Cookieヘッダを<strong>明示的に転送</strong>して再フェッチ</div>
+            <div class="note">これを忘れると SSR は常に401になる</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-model">
+      <div class="eyebrow">05 / State</div>
+      <h2>データモデル(AppState)</h2>
+      <p class="lede">正規化せず、フィールドごとに1つのJSONブロブとして <code>kv_store</code> に保存する方式(意図的なトレードオフ、詳細は技術資料 §5)。</p>
+      <div class="model-grid">
+        <div class="card model-card">
+          <div class="name">Repository</div>
+          <ul><li>slug, name, organization</li><li>description, visibility</li><li>sizeLabel, lockedFileCount</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">PullRequest</div>
+          <ul><li>id, repo_slug, status</li><li>diff_files</li><li>comments</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">OrgMember</div>
+          <ul><li>email, name, role</li><li>password_hash</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">AuditLogEntry</div>
+          <ul><li>actor, action</li><li>target, timestamp</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="sitemap">
+      <div class="eyebrow">06 / IA</div>
+      <h2>LoreHub Web サイトマップ</h2>
+      <div class="card tree">
+        <ul>
+          <li><span class="path">/login</span></li>
+          <li><span class="path">/</span> <span class="desc">— リポジトリ一覧</span>
+            <ul>
+              <li><span class="path">/repositories/[slug]</span> <span class="desc">— Code タブ(ツリー + README)</span></li>
+              <li><span class="path">/repositories/[slug]/commits</span> <span class="desc">— ブランチグラフ</span>
+                <ul><li><span class="path">/repositories/[slug]/commits/[hash]</span></li></ul>
+              </li>
+              <li><span class="path">/repositories/[slug]/settings</span> <span class="desc">— rename / visibility / 削除</span></li>
+            </ul>
+          </li>
+          <li><span class="path">/pulls</span> <span class="desc">— PR一覧</span>
+            <ul><li><span class="path">/pulls/[id]</span> <span class="desc">— 差分レビュー + コメント</span></li></ul>
+          </li>
+          <li><span class="path">/access-control</span> <span class="desc">— ディレクトリ×権限マトリクス</span></li>
+          <li><span class="path">/settings</span> <span class="desc">— メンバー・監査ログ・容量</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="api">
+      <div class="eyebrow">07 / Reference</div>
+      <h2>主要APIエンドポイント</h2>
+      <p class="lede"><code>POST /api/auth/login</code> 以外は全て認証必須(<code>require_auth</code>ミドルウェア)。完全な一覧は技術資料を参照。</p>
+      <div class="card" style="overflow-x:auto;">
+        <table class="api">
+          <thead><tr><th>Method</th><th>Path</th><th>説明</th></tr></thead>
+          <tbody>
+            <tr><td class="method">POST</td><td class="path">/api/auth/login</td><td>ログイン(公開)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories</td><td>リポジトリ一覧</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories</td><td>リポジトリ作成</td></tr>
+            <tr><td class="method">PATCH</td><td class="path">/api/repositories/{slug}</td><td>rename / description / visibility 更新</td></tr>
+            <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(関連PRも削除)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/lock</td><td>ファイルロック切替</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/pulls</td><td>PR一覧</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/pulls/{id}/comments</td><td>PRコメント追加</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/access-control/entries</td><td>権限一覧</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/org/audit-log</td><td>監査ログ</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tokens">
+      <div class="eyebrow">08 / Design System</div>
+      <h2>デザイントークン(Web / Qt 共通)</h2>
+      <p class="lede">Spotify風ダークUIをベースに、<code>DESIGN.md</code> §10 が Web の CSS変数と Qt の <code>Theme.qml</code> の対応表を定義している。</p>
+      <div class="swatch-grid">
+        <div class="swatch"><div class="swatch-fill" style="background:#121212"></div><div class="swatch-meta"><div class="role">bg-base</div><div class="hex">#121212</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#181818"></div><div class="swatch-meta"><div class="role">bg-surface</div><div class="hex">#181818</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#1ed760"></div><div class="swatch-meta"><div class="role">accent</div><div class="hex">#1ed760</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#ffffff;border-bottom:1px solid var(--border)"></div><div class="swatch-meta"><div class="role">text-primary</div><div class="hex">#ffffff</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#b3b3b3"></div><div class="swatch-meta"><div class="role">text-secondary</div><div class="hex">#b3b3b3</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#f3727f"></div><div class="swatch-meta"><div class="role">negative</div><div class="hex">#f3727f</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#ffa42b"></div><div class="swatch-meta"><div class="role">warning</div><div class="hex">#ffa42b</div></div></div>
+        <div class="swatch"><div class="swatch-fill" style="background:#539df5"></div><div class="swatch-meta"><div class="role">announcement</div><div class="hex">#539df5</div></div></div>
+      </div>
+    </section>
+
+    <section id="timeline">
+      <div class="eyebrow">09 / History</div>
+      <h2>開発の歩み</h2>
+      <div class="timeline-wrap">
+        <div class="timeline">
+          <div class="phase">
+            <div class="n">Phase 0</div>
+            <div class="t">設計固め</div>
+            <ul><li>System Architecture確定</li><li>デザイントークン統一</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 1</div>
+            <div class="t">LoreHub Web 基本UI</div>
+            <ul><li>一覧/ツリー/ファイル詳細</li><li>コミット履歴/PR差分</li><li>アクセス制御/組織設定</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 2</div>
+            <div class="t">バックエンド接続</div>
+            <ul><li>Rust(Axum)スキャフォールド</li><li>Web⇔API結線</li><li>横型ブランチグラフ</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 3</div>
+            <div class="t">リッチプレビュー</div>
+            <ul><li>Three.js 3Dビューア</li><li>実画像プレビュー</li><li>波形オーディオ</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 4</div>
+            <div class="t">認証と永続化</div>
+            <ul><li>セッション認証(argon2)</li><li>全GETをゲート</li><li>SQLite永続化</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 5</div>
+            <div class="t">デスクトップ着手</div>
+            <ul><li>Client雛形+ログイン</li><li>ツリー+ロック操作</li><li>Server Admin雛形</li></ul>
+          </div>
+          <div class="phase current">
+            <div class="n">Phase 6</div>
+            <div class="t">機能拡張(現在)</div>
+            <ul><li>リポジトリ設定</li><li>Client コミット履歴</li><li>Server Admin 権限永続化</li></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="agents">
+      <div class="eyebrow">10 / Workflow</div>
+      <h2>マルチエージェント並行開発</h2>
+      <p class="lede">ディレクトリが重ならない3つの作業を分割し、バックグラウンドサブエージェントとして並行実行した。</p>
+      <div class="card">
+        <div class="agent-flow">
+          <div class="agent-row">
+            <div class="from mono">Main session</div>
+            <div class="arrow"></div>
+            <div class="to">lorehub-web/ — リポジトリ設定機能(直接実装)</div>
+          </div>
+          <div class="agent-row">
+            <div class="from mono">Main session</div>
+            <div class="arrow"></div>
+            <div class="to">loreforge-client/ — コミット履歴ビュー(sub-agent)</div>
+          </div>
+          <div class="agent-row">
+            <div class="from mono">Main session</div>
+            <div class="arrow"></div>
+            <div class="to">loreforge-server-admin/ — 権限設定永続化(sub-agent)</div>
+          </div>
+        </div>
+      </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        鍵となったのは「スコープの分離」(ディレクトリが衝突しない)と「知識の伝播」(1体目が発見した罠 — QML singleton、<code>SendInput</code>の不通、<code>QStringLiteral</code>の制約など — を後続のプロンプトに引き継いだこと)。
+      </p>
+    </section>
+
+    <section id="status">
+      <div class="eyebrow">11 / Now</div>
+      <h2>現在の状態</h2>
+      <div class="status-list">
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・リポジトリCRUD</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — 権限設定(アクセス制御グラフ)の永続化</span></div>
+        <div class="status-row"><span class="badge progress">進行中</span><span class="txt">LoreForge Client — コミット履歴ビュー</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — Fork並みの実操作(コミット / ブランチ / push・pull)</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Server Admin — Docker実接続(MinIO / Lore Server起動)</span></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <div class="inner">
+    <span>Lore Ecosystem — internal architecture reference</span>
+    <span>関連: ARCHITECTURE_AND_DESIGN.md · TECHNICAL_REFERENCE.md · LECTURE_NOTES.md</span>
+  </div>
+</footer>
