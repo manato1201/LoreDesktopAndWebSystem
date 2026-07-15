@@ -6,10 +6,12 @@ Item {
     id: workspace
 
     property var treeModel
+    property var commitModel
     property var authController
     property string slug: ""
     property string repoName: ""
     property string selectedPath: ""
+    property string activeTab: "files" // "files" | "history"
 
     // Re-evaluated whenever treeModel.count changes (load, expand/collapse,
     // lock round-trip) since rowForPath() reads C++ state that isn't itself
@@ -81,8 +83,63 @@ Item {
             }
         }
 
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingUnit
+
+            Rectangle {
+                implicitWidth: filesTabLabel.implicitWidth + Theme.spacingUnit * 3
+                implicitHeight: 32
+                radius: height / 2
+                color: workspace.activeTab === "files" ? Theme.colorSurfaceElevated : "transparent"
+                border.width: workspace.activeTab === "files" ? 0 : 1
+                border.color: Theme.colorBorder
+
+                Text {
+                    id: filesTabLabel
+                    anchors.centerIn: parent
+                    text: "Files"
+                    color: workspace.activeTab === "files" ? Theme.colorTextPrimary : Theme.colorTextSecondary
+                    font.bold: workspace.activeTab === "files"
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: workspace.activeTab = "files"
+                }
+            }
+
+            Rectangle {
+                implicitWidth: historyTabLabel.implicitWidth + Theme.spacingUnit * 3
+                implicitHeight: 32
+                radius: height / 2
+                color: workspace.activeTab === "history" ? Theme.colorSurfaceElevated : "transparent"
+                border.width: workspace.activeTab === "history" ? 0 : 1
+                border.color: Theme.colorBorder
+
+                Text {
+                    id: historyTabLabel
+                    anchors.centerIn: parent
+                    text: "History"
+                    color: workspace.activeTab === "history" ? Theme.colorTextPrimary : Theme.colorTextSecondary
+                    font.bold: workspace.activeTab === "history"
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: workspace.activeTab = "history"
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+        }
+
         Text {
-            visible: workspace.treeModel && workspace.treeModel.errorMessage.length > 0
+            visible: workspace.activeTab === "files" && workspace.treeModel && workspace.treeModel.errorMessage.length > 0
             text: workspace.treeModel ? workspace.treeModel.errorMessage : ""
             color: Theme.colorNegative
             font.pixelSize: Theme.fontSizeCaption
@@ -92,6 +149,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: Theme.spacingUnit * 2
+            visible: workspace.activeTab === "files"
 
             Rectangle {
                 Layout.fillWidth: true
@@ -259,6 +317,14 @@ Item {
                     }
                 }
             }
+        }
+
+        CommitHistoryView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: workspace.activeTab === "history"
+            commitModel: workspace.commitModel
+            slug: workspace.slug
         }
     }
 }

@@ -32,6 +32,10 @@ ApplicationWindow {
         id: treeModelInstance
     }
 
+    CommitListModel {
+        id: commitModelInstance
+    }
+
     Loader {
         anchors.fill: parent
         sourceComponent: {
@@ -67,6 +71,7 @@ ApplicationWindow {
         id: workspaceComponent
         RepositoryWorkspaceScreen {
             treeModel: treeModelInstance
+            commitModel: commitModelInstance
             authController: authControllerInstance
             slug: window.activeSlug
             repoName: window.activeRepoName
