@@ -1,4 +1,5 @@
 mod auth;
+mod db;
 mod handlers;
 mod image_assets;
 mod models;
@@ -9,7 +10,6 @@ use std::sync::Arc;
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{get, patch, post};
 use axum::{Router, middleware};
-use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -17,7 +17,21 @@ use tower_http::trace::TraceLayer;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let shared_state: state::SharedState = Arc::new(RwLock::new(state::seed()));
+    let pool = db::connect("lorehub.db").await;
+    let initial_state = match db::load_state(&pool).await {
+        Some(state) => {
+            tracing::info!("loaded persisted state from lorehub.db");
+            state
+        }
+        None => {
+            tracing::info!("no persisted state found — seeding lorehub.db");
+            let seeded = state::seed();
+            db::save_all(&pool, &seeded).await;
+            seeded
+        }
+    };
+
+    let shared_state: state::SharedState = Arc::new(state::AppContext::new(initial_state, pool));
 
     // Dev-only CORS scoped to the Next.js dev server. `allow_credentials`
     // requires an explicit origin (no `Any`) per the CORS spec.

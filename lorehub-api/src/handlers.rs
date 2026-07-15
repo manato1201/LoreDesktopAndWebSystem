@@ -30,12 +30,12 @@ fn unauthorized() -> Response {
 /// it into request extensions so downstream handlers can pull it out via
 /// `Extension<OrgMember>` instead of re-checking the session themselves.
 pub async fn require_auth(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let token = auth::extract_session_token(request.headers());
-    let state_guard = state.read().await;
+    let state_guard = ctx.read().await;
     let email = token.and_then(|t| state_guard.sessions.get(&t).cloned());
     let Some(email) = email else {
         return unauthorized();
@@ -60,8 +60,8 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-pub async fn login(State(state): State<SharedState>, Json(body): Json<LoginRequest>) -> Response {
-    let mut state = state.write().await;
+pub async fn login(State(ctx): State<SharedState>, Json(body): Json<LoginRequest>) -> Response {
+    let mut state = ctx.write().await;
 
     let Some(hash) = state.credentials.get(&body.email).cloned() else {
         return unauthorized();
@@ -80,6 +80,9 @@ pub async fn login(State(state): State<SharedState>, Json(body): Json<LoginReque
 
     let token = auth::generate_token();
     state.sessions.insert(token.clone(), body.email);
+    let sessions = state.sessions.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -90,9 +93,13 @@ pub async fn login(State(state): State<SharedState>, Json(body): Json<LoginReque
     (headers, Json(serde_json::json!({ "user": user }))).into_response()
 }
 
-pub async fn logout(State(state): State<SharedState>, headers: HeaderMap) -> Response {
+pub async fn logout(State(ctx): State<SharedState>, headers: HeaderMap) -> Response {
     if let Some(token) = auth::extract_session_token(&headers) {
-        state.write().await.sessions.remove(&token);
+        let mut state = ctx.write().await;
+        state.sessions.remove(&token);
+        let sessions = state.sessions.clone();
+        drop(state);
+        crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
     }
 
     let mut response_headers = HeaderMap::new();
@@ -107,16 +114,13 @@ pub async fn me(axum::Extension(user): axum::Extension<OrgMember>) -> Json<OrgMe
     Json(user)
 }
 
-pub async fn list_repositories(State(state): State<SharedState>) -> Json<Vec<Repository>> {
-    let state = state.read().await;
+pub async fn list_repositories(State(ctx): State<SharedState>) -> Json<Vec<Repository>> {
+    let state = ctx.read().await;
     Json(state.repositories.clone())
 }
 
-pub async fn get_repository(
-    State(state): State<SharedState>,
-    Path(slug): Path<String>,
-) -> Response {
-    let state = state.read().await;
+pub async fn get_repository(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let state = ctx.read().await;
     match state.repositories.iter().find(|r| r.slug == slug) {
         Some(repo) => Json(repo.clone()).into_response(),
         None => not_found("repository not found"),
@@ -124,10 +128,10 @@ pub async fn get_repository(
 }
 
 pub async fn get_file_content(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
 ) -> Response {
-    let state = state.read().await;
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -142,10 +146,10 @@ fn svg_response(svg: &str) -> Response {
 }
 
 pub async fn get_image(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
 ) -> Response {
-    let state = state.read().await;
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -156,10 +160,10 @@ pub async fn get_image(
 }
 
 pub async fn get_image_before(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
 ) -> Response {
-    let state = state.read().await;
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -170,10 +174,10 @@ pub async fn get_image_before(
 }
 
 pub async fn get_audio(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
 ) -> Response {
-    let state = state.read().await;
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -183,8 +187,8 @@ pub async fn get_audio(
     }
 }
 
-pub async fn get_tree(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = state.read().await;
+pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -199,12 +203,12 @@ pub struct LockRequest {
 }
 
 pub async fn toggle_lock(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
     Path(slug): Path<String>,
     Json(body): Json<LockRequest>,
 ) -> Response {
-    let mut state = state.write().await;
+    let mut state = ctx.write().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -222,19 +226,25 @@ pub async fn toggle_lock(
     let action = if body.lock { "locked" } else { "unlocked" };
     state.record_audit(&user.name, action, &body.path);
 
-    Json(state.tree.clone()).into_response()
+    let tree = state.tree.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "tree", &tree).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(tree).into_response()
 }
 
-pub async fn list_commits(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = state.read().await;
+pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
     Json(state.commits.clone()).into_response()
 }
 
-pub async fn list_branches(State(state): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = state.read().await;
+pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -242,10 +252,10 @@ pub async fn list_branches(State(state): State<SharedState>, Path(slug): Path<St
 }
 
 pub async fn get_commit(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Path((slug, hash)): Path<(String, String)>,
 ) -> Response {
-    let state = state.read().await;
+    let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
@@ -261,10 +271,10 @@ pub struct PullsQuery {
 }
 
 pub async fn list_pull_requests(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     Query(query): Query<PullsQuery>,
 ) -> Json<Vec<PullRequest>> {
-    let state = state.read().await;
+    let state = ctx.read().await;
     let status = query.status.unwrap_or_else(|| "open".to_string());
     let filtered: Vec<PullRequest> = state
         .pull_requests
@@ -282,11 +292,8 @@ pub async fn list_pull_requests(
     Json(filtered)
 }
 
-pub async fn get_pull_request(
-    State(state): State<SharedState>,
-    Path(id): Path<String>,
-) -> Response {
-    let state = state.read().await;
+pub async fn get_pull_request(State(ctx): State<SharedState>, Path(id): Path<String>) -> Response {
+    let state = ctx.read().await;
     match state.pull_requests.iter().find(|pr| pr.id == id) {
         Some(pr) => Json(pr.clone()).into_response(),
         None => not_found("pull request not found"),
@@ -299,12 +306,12 @@ pub struct CommentRequest {
 }
 
 pub async fn add_comment(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
     Path(id): Path<String>,
     Json(body): Json<CommentRequest>,
 ) -> Response {
-    let mut state = state.write().await;
+    let mut state = ctx.write().await;
     let Some(pr) = state.pull_requests.iter_mut().find(|pr| pr.id == id) else {
         return not_found("pull request not found");
     };
@@ -326,14 +333,25 @@ pub async fn add_comment(
         &format!("#{pr_id} {pr_title}"),
     );
 
-    let pr = state.pull_requests.iter().find(|pr| pr.id == id).unwrap();
-    Json(pr.clone()).into_response()
+    let pr = state
+        .pull_requests
+        .iter()
+        .find(|pr| pr.id == id)
+        .unwrap()
+        .clone();
+    let pull_requests = state.pull_requests.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "pull_requests", &pull_requests).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(pr).into_response()
 }
 
 pub async fn get_access_entries(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
 ) -> Json<HashMap<String, Vec<AccessEntry>>> {
-    let state = state.read().await;
+    let state = ctx.read().await;
     Json(state.access_entries.clone())
 }
 
@@ -345,11 +363,11 @@ pub struct PermissionToggleRequest {
 }
 
 pub async fn toggle_permission(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
     Json(body): Json<PermissionToggleRequest>,
 ) -> Response {
-    let mut state = state.write().await;
+    let mut state = ctx.write().await;
     let Some(entries) = state.access_entries.get_mut(&body.path) else {
         return not_found("no access entries for this path");
     };
@@ -365,12 +383,18 @@ pub async fn toggle_permission(
 
     state.record_audit(&user.name, "updated permissions on", &body.path);
 
-    let entries = state.access_entries.get(&body.path).unwrap();
-    Json(entries.clone()).into_response()
+    let entries = state.access_entries.get(&body.path).unwrap().clone();
+    let access_entries = state.access_entries.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "access_entries", &access_entries).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(entries).into_response()
 }
 
-pub async fn list_members(State(state): State<SharedState>) -> Json<Vec<OrgMember>> {
-    let state = state.read().await;
+pub async fn list_members(State(ctx): State<SharedState>) -> Json<Vec<OrgMember>> {
+    let state = ctx.read().await;
     Json(state.org_members.clone())
 }
 
@@ -380,12 +404,12 @@ pub struct RoleUpdateRequest {
 }
 
 pub async fn update_member_role(
-    State(state): State<SharedState>,
+    State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
     Path(email): Path<String>,
     Json(body): Json<RoleUpdateRequest>,
 ) -> Response {
-    let mut state = state.write().await;
+    let mut state = ctx.write().await;
     let Some(member) = state.org_members.iter_mut().find(|m| m.email == email) else {
         return not_found("member not found");
     };
@@ -394,15 +418,21 @@ pub async fn update_member_role(
 
     state.record_audit(&user.name, "changed role for", &email);
 
+    let org_members = state.org_members.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "org_members", &org_members).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
     Json(member).into_response()
 }
 
-pub async fn get_storage(State(state): State<SharedState>) -> Json<StorageUsage> {
-    let state = state.read().await;
+pub async fn get_storage(State(ctx): State<SharedState>) -> Json<StorageUsage> {
+    let state = ctx.read().await;
     Json(state.storage.clone())
 }
 
-pub async fn get_audit_log(State(state): State<SharedState>) -> Json<Vec<AuditLogEntry>> {
-    let state = state.read().await;
+pub async fn get_audit_log(State(ctx): State<SharedState>) -> Json<Vec<AuditLogEntry>> {
+    let state = ctx.read().await;
     Json(state.audit_log.clone())
 }
