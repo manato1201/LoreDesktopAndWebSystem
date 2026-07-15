@@ -1,68 +1,76 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import LoreForge
 
 ApplicationWindow {
     id: window
-    width: 1200
-    height: 800
+    width: 1280
+    height: 840
     visible: true
     title: "LoreForge Client"
     color: Theme.colorBackgroundBase
 
-    RepositoryListModel {
-        id: repositoryModel
+    property string activeScreen: "login" // "login" | "repositories" | "workspace"
+    property string activeSlug: ""
+    property string activeRepoName: ""
+
+    // Ids are deliberately distinct from the screens' own `authController` /
+    // `repositoryModel` / `treeModel` properties below — reusing the same
+    // name creates a self-referential QML binding loop (the property
+    // shadows the outer id inside its own binding expression) and silently
+    // resolves to undefined instead of the intended object.
+    AuthController {
+        id: authControllerInstance
+        onLoggedInChanged: window.activeScreen = authControllerInstance.loggedIn ? "repositories" : "login"
     }
 
-    ColumnLayout {
+    RepositoryListModel {
+        id: repositoryModelInstance
+    }
+
+    RepositoryTreeModel {
+        id: treeModelInstance
+    }
+
+    Loader {
         anchors.fill: parent
-        anchors.margins: Theme.spacingUnit * 3
-        spacing: Theme.spacingUnit * 3
+        sourceComponent: {
+            if (window.activeScreen === "workspace")
+                return workspaceComponent
+            if (window.activeScreen === "repositories")
+                return repositoryListComponent
+            return loginComponent
+        }
+    }
 
-        RowLayout {
-            Layout.fillWidth: true
+    Component {
+        id: loginComponent
+        LoginScreen {
+            authController: authControllerInstance
+        }
+    }
 
-            Text {
-                text: "LoreForge"
-                color: Theme.colorAccent
-                font.bold: true
-                font.pixelSize: Theme.fontSizeSectionTitle
-            }
-
-            Item { Layout.fillWidth: true }
-
-            Text {
-                text: repositoryModel.count + " repositories"
-                color: Theme.colorTextSecondary
-                font.pixelSize: Theme.fontSizeCaption
+    Component {
+        id: repositoryListComponent
+        RepositoryListScreen {
+            repositoryModel: repositoryModelInstance
+            authController: authControllerInstance
+            onRepositorySelected: (slug, name) => {
+                window.activeSlug = slug
+                window.activeRepoName = name
+                window.activeScreen = "workspace"
             }
         }
+    }
 
-        GridView {
-            id: grid
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            cellWidth: 320
-            cellHeight: 168
-            model: repositoryModel
-
-            delegate: Item {
-                width: grid.cellWidth
-                height: grid.cellHeight
-
-                RepositoryCard {
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingUnit
-                    repoName: model.name
-                    repoDescription: model.description
-                    updatedAt: model.updatedAt
-                    sizeLabel: model.sizeLabel
-                    lockedFileCount: model.lockedFileCount
-                    visibilityLabel: model.visibility
-                }
-            }
+    Component {
+        id: workspaceComponent
+        RepositoryWorkspaceScreen {
+            treeModel: treeModelInstance
+            authController: authControllerInstance
+            slug: window.activeSlug
+            repoName: window.activeRepoName
+            onBackRequested: window.activeScreen = "repositories"
         }
     }
 }
