@@ -1,13 +1,42 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use sqlx::SqlitePool;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::auth;
 use crate::image_assets;
 use crate::models::*;
 
-pub type SharedState = Arc<RwLock<AppState>>;
+pub type SharedState = Arc<AppContext>;
+
+/// Wraps the in-memory `AppState` (still the hot path every handler reads
+/// and writes) with the SQLite pool used to persist it. `read`/`write`
+/// delegate to the inner lock so existing `ctx.read().await` /
+/// `ctx.write().await` call sites don't need to know persistence exists;
+/// handlers that mutate state additionally call `crate::db::save_blob`
+/// with `ctx.db` to flush the changed piece to disk.
+pub struct AppContext {
+    state: RwLock<AppState>,
+    pub db: SqlitePool,
+}
+
+impl AppContext {
+    pub fn new(state: AppState, db: SqlitePool) -> Self {
+        Self {
+            state: RwLock::new(state),
+            db,
+        }
+    }
+
+    pub async fn read(&self) -> RwLockReadGuard<'_, AppState> {
+        self.state.read().await
+    }
+
+    pub async fn write(&self) -> RwLockWriteGuard<'_, AppState> {
+        self.state.write().await
+    }
+}
 
 pub struct AppState {
     pub repositories: Vec<Repository>,
