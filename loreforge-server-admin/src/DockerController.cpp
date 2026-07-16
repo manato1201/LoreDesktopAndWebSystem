@@ -46,6 +46,14 @@ void DockerController::setMinioStatus(MinioStatus status)
     emit minioStatusChanged();
 }
 
+void DockerController::setMinioStatsLabel(const QString &label)
+{
+    if (m_minioStatsLabel == label)
+        return;
+    m_minioStatsLabel = label;
+    emit minioStatsLabelChanged();
+}
+
 void DockerController::setLastError(const QString &error)
 {
     m_lastError = error;
@@ -91,15 +99,19 @@ void DockerController::refreshMinioStatus()
     connect(process, &QProcess::finished, this,
             [this, process](int exitCode, QProcess::ExitStatus) {
                 const QString output = QString::fromUtf8(process->readAllStandardOutput()).trimmed();
-                if (exitCode == 0 && !output.isEmpty())
+                if (exitCode == 0 && !output.isEmpty()) {
                     setMinioStatus(Running);
-                else
+                    refreshMinioStats();
+                } else {
                     setMinioStatus(Stopped);
+                    setMinioStatsLabel(QString());
+                }
                 process->deleteLater();
             });
     connect(process, &QProcess::errorOccurred, this,
             [this, process](QProcess::ProcessError) {
                 setMinioStatus(NotInstalled);
+                setMinioStatsLabel(QString());
                 process->deleteLater();
             });
 
@@ -108,6 +120,36 @@ void DockerController::refreshMinioStatus()
                       QStringLiteral("--filter"), QStringLiteral("name=%1").arg(kMinioContainerName),
                       QStringLiteral("--filter"), QStringLiteral("status=running"),
                       QStringLiteral("--format"), QStringLiteral("{{.Status}}") });
+}
+
+// Best-effort CPU/RAM readout for the MinIO container. Only called once
+// refreshMinioStatus() has already confirmed the container is Running, to
+// avoid an extra `docker stats` call (and its failure noise) against a
+// stopped/nonexistent container. Unverified against a real Docker install in
+// this sandbox — kept defensive so a parsing miss just clears the label
+// instead of surfacing an error.
+void DockerController::refreshMinioStats()
+{
+    auto *process = new QProcess(this);
+    connect(process, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus) {
+                const QString output = QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+                if (exitCode == 0 && !output.isEmpty())
+                    setMinioStatsLabel(output);
+                else
+                    setMinioStatsLabel(QString());
+                process->deleteLater();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process](QProcess::ProcessError) {
+                setMinioStatsLabel(QString());
+                process->deleteLater();
+            });
+
+    process->start(QStringLiteral("docker"),
+                    { QStringLiteral("stats"), QLatin1String(kMinioContainerName),
+                      QStringLiteral("--no-stream"),
+                      QStringLiteral("--format"), QStringLiteral("{{.CPUPerc}} / {{.MemUsage}}") });
 }
 
 void DockerController::startMinio()

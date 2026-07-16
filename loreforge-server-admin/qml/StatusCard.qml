@@ -12,6 +12,10 @@ Rectangle {
     property string caption: ""
     property bool captionItalic: false
     property bool busy: false
+    // Short secondary status line (e.g. "PID 12345 · 42 MB" or a
+    // "CPU% / MemUsage" stats readout) shown under the title/status row
+    // when non-empty. Optional — cards that don't set it render nothing.
+    property string detailText: ""
 
     property string primaryActionLabel: ""
     property bool primaryActionEnabled: true
@@ -57,6 +61,15 @@ Rectangle {
                 color: Theme.colorTextSecondary
                 font.pixelSize: Theme.fontSizeCaption
             }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: card.detailText
+            visible: !card.busy && card.detailText.length > 0
+            color: Theme.colorTextSecondary
+            font.pixelSize: Theme.fontSizeSmall
+            font.family: "Consolas"
         }
 
         Item { Layout.fillHeight: true }
