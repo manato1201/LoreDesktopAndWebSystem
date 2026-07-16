@@ -28,6 +28,14 @@ pub fn generate_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Generates a 40-char lowercase-hex fake commit SHA (20 random bytes,
+/// hex-encoded) for the simulated commit endpoint — there is no real
+/// content-hashing VCS backing this demo server.
+pub fn generate_commit_hash() -> String {
+    let bytes: [u8; 20] = rand::thread_rng().r#gen();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for part in cookie_header.split(';') {

@@ -88,7 +88,7 @@ async fn main() {
         )
         .route(
             "/api/repositories/{slug}/commits",
-            get(handlers::list_commits),
+            get(handlers::list_commits).post(handlers::create_commit),
         )
         .route(
             "/api/repositories/{slug}/commits/{hash}",
@@ -96,7 +96,23 @@ async fn main() {
         )
         .route(
             "/api/repositories/{slug}/branches",
-            get(handlers::list_branches),
+            get(handlers::list_branches).post(handlers::create_branch),
+        )
+        .route(
+            "/api/repositories/{slug}/branches/current",
+            get(handlers::get_current_branch),
+        )
+        .route(
+            "/api/repositories/{slug}/checkout",
+            post(handlers::checkout_branch),
+        )
+        .route(
+            "/api/repositories/{slug}/pending",
+            get(handlers::get_pending_changes),
+        )
+        .route(
+            "/api/repositories/{slug}/tree/stage",
+            post(handlers::stage_change),
         )
         .route("/api/pulls", get(handlers::list_pull_requests))
         .route("/api/pulls/{id}", get(handlers::get_pull_request))

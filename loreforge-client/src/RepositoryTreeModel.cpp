@@ -47,6 +47,8 @@ QVariant RepositoryTreeModel::data(const QModelIndex &index, int role) const
         return row.expanded;
     case IsDirectoryRole:
         return row.isDirectory;
+    case StagedChangeTypeRole:
+        return row.stagedChangeType;
     default:
         return {};
     }
@@ -65,6 +67,7 @@ QHash<int, QByteArray> RepositoryTreeModel::roleNames() const
         { HasChildrenRole, "hasChildren" },
         { ExpandedRole, "expanded" },
         { IsDirectoryRole, "isDirectory" },
+        { StagedChangeTypeRole, "stagedChangeType" },
     };
 }
 
@@ -72,11 +75,13 @@ void RepositoryTreeModel::loadRepository(const QString &slug)
 {
     m_slug = slug;
     m_roots.clear();
+    m_pendingChanges.clear();
 
     beginResetModel();
     m_flatRows.clear();
     endResetModel();
     emit countChanged();
+    emit pendingCountChanged();
 
     setErrorMessage(QString());
     setBusy(true);
@@ -95,6 +100,8 @@ void RepositoryTreeModel::loadRepository(const QString &slug)
         applyTreeJson(QJsonDocument::fromJson(reply->readAll()).array());
         reply->deleteLater();
     });
+
+    fetchPending();
 }
 
 void RepositoryTreeModel::toggleExpanded(const QString &path)
@@ -156,10 +163,106 @@ QVariantMap RepositoryTreeModel::rowForPath(const QString &path) const
             map["hasChildren"] = row.hasChildren;
             map["expanded"] = row.expanded;
             map["isDirectory"] = row.isDirectory;
+            map["stagedChangeType"] = row.stagedChangeType;
             return map;
         }
     }
     return {};
+}
+
+void RepositoryTreeModel::stageChange(const QString &path, const QString &changeType)
+{
+    if (m_slug.isEmpty())
+        return;
+
+    setErrorMessage(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/tree/stage"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["path"] = path;
+    body["changeType"] = changeType;
+    body["staged"] = true;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            setErrorMessage(reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        applyPendingJson(QJsonDocument::fromJson(reply->readAll()).array());
+        reply->deleteLater();
+    });
+}
+
+void RepositoryTreeModel::unstageChange(const QString &path)
+{
+    if (m_slug.isEmpty())
+        return;
+
+    setErrorMessage(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/tree/stage"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["path"] = path;
+    // The server ignores changeType when staged is false, but the field is
+    // required on the wire — reuse whatever this path was staged as if we
+    // still know it, otherwise a harmless placeholder.
+    body["changeType"] = m_pendingChanges.value(path, QStringLiteral("modified"));
+    body["staged"] = false;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            setErrorMessage(reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        applyPendingJson(QJsonDocument::fromJson(reply->readAll()).array());
+        reply->deleteLater();
+    });
+}
+
+void RepositoryTreeModel::fetchPending()
+{
+    if (m_slug.isEmpty())
+        return;
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/pending"));
+    QNetworkReply *reply = ApiClient::networkManager().get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            // Non-fatal: staged-row indicators just won't show until the
+            // next successful refresh.
+            reply->deleteLater();
+            return;
+        }
+
+        applyPendingJson(QJsonDocument::fromJson(reply->readAll()).array());
+        reply->deleteLater();
+    });
+}
+
+void RepositoryTreeModel::applyPendingJson(const QJsonArray &array)
+{
+    QMap<QString, QString> pending;
+    for (const QJsonValue &value : array) {
+        const QJsonObject obj = value.toObject();
+        pending.insert(obj.value("path").toString(), obj.value("changeType").toString());
+    }
+    m_pendingChanges = pending;
+
+    beginResetModel();
+    rebuildFlatRows();
+    endResetModel();
+    emit countChanged();
+    emit pendingCountChanged();
 }
 
 void RepositoryTreeModel::applyTreeJson(const QJsonArray &array)
@@ -232,10 +335,11 @@ void RepositoryTreeModel::applyExpandedState(QVector<TreeItem> &nodes, const QMa
 void RepositoryTreeModel::rebuildFlatRows()
 {
     m_flatRows.clear();
-    flattenInto(m_roots, 0, m_flatRows);
+    flattenInto(m_roots, 0, m_flatRows, m_pendingChanges);
 }
 
-void RepositoryTreeModel::flattenInto(const QVector<TreeItem> &nodes, int depth, QVector<FlatRow> &out)
+void RepositoryTreeModel::flattenInto(const QVector<TreeItem> &nodes, int depth, QVector<FlatRow> &out,
+                                       const QMap<QString, QString> &staged)
 {
     for (const TreeItem &n : nodes) {
         FlatRow row;
@@ -245,6 +349,7 @@ void RepositoryTreeModel::flattenInto(const QVector<TreeItem> &nodes, int depth,
         row.sizeLabel = n.sizeLabel;
         row.updatedAt = n.updatedAt;
         row.lockedBy = n.lockedBy;
+        row.stagedChangeType = staged.value(n.path);
         row.depth = depth;
         row.isDirectory = n.kind == QLatin1String("directory");
         row.hasChildren = row.isDirectory && !n.children.isEmpty();
@@ -252,7 +357,7 @@ void RepositoryTreeModel::flattenInto(const QVector<TreeItem> &nodes, int depth,
         out.append(row);
 
         if (row.isDirectory && n.expanded)
-            flattenInto(n.children, depth + 1, out);
+            flattenInto(n.children, depth + 1, out, staged);
     }
 }
 
