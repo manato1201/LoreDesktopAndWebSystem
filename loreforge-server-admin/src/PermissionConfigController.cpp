@@ -1,4 +1,5 @@
 #include "PermissionConfigController.h"
+#include "ApiClient.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -9,6 +10,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
 #include <QVariantMap>
 
 namespace {
@@ -53,7 +57,28 @@ void PermissionConfigController::setLastError(const QString &error)
     emit lastErrorChanged();
 }
 
-bool PermissionConfigController::saveConfig(const QVariantList &nodes, const QVariantList &connections)
+void PermissionConfigController::setApplying(bool applying)
+{
+    if (m_applying == applying)
+        return;
+    m_applying = applying;
+    emit applyingChanged();
+}
+
+void PermissionConfigController::setApplyError(const QString &error)
+{
+    m_applyError = error;
+    emit applyErrorChanged();
+}
+
+void PermissionConfigController::setApplySuccess(const QString &message)
+{
+    m_applySuccess = message;
+    emit applySuccessChanged();
+}
+
+void PermissionConfigController::buildGraphJson(const QVariantList &nodes, const QVariantList &connections,
+                                                 QJsonArray &directoriesArray, QJsonArray &rolesArray) const
 {
     QHash<QString, QJsonObject> directoryById;
     QHash<QString, QJsonObject> roleById;
@@ -111,13 +136,20 @@ bool PermissionConfigController::saveConfig(const QVariantList &nodes, const QVa
         directoryById.insert(from, directory);
     }
 
-    QJsonArray directoriesArray;
+    directoriesArray = QJsonArray();
     for (const QString &id : directoryOrder)
         directoriesArray.append(directoryById.value(id));
 
-    QJsonArray rolesArray;
+    rolesArray = QJsonArray();
     for (const QString &id : roleOrder)
         rolesArray.append(roleById.value(id));
+}
+
+bool PermissionConfigController::saveConfig(const QVariantList &nodes, const QVariantList &connections)
+{
+    QJsonArray directoriesArray;
+    QJsonArray rolesArray;
+    buildGraphJson(nodes, connections, directoriesArray, rolesArray);
 
     QJsonObject root;
     root[QStringLiteral("directories")] = directoriesArray;
@@ -216,4 +248,125 @@ bool PermissionConfigController::loadConfig()
     setLastError(QString());
     emit configLoaded();
     return true;
+}
+
+void PermissionConfigController::login(const QString &email, const QString &password)
+{
+    setApplyError(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + QStringLiteral("/api/auth/login")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject body;
+    body[QStringLiteral("email")] = email;
+    body[QStringLiteral("password")] = password;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray data = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString message = QStringLiteral("Login failed. Check your email and password.");
+            const QJsonObject obj = QJsonDocument::fromJson(data).object();
+            if (obj.contains(QStringLiteral("error")))
+                message = obj.value(QStringLiteral("error")).toString();
+            setApplyError(message);
+            reply->deleteLater();
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(data).object();
+        const QJsonObject user = obj.value(QStringLiteral("user")).toObject();
+
+        m_connectedAs = user.value(QStringLiteral("name")).toString();
+        m_connected = true;
+        emit connectedChanged();
+
+        reply->deleteLater();
+    });
+}
+
+void PermissionConfigController::applyToServer()
+{
+    if (!m_connected) {
+        setApplyError(QStringLiteral("Log in before applying to the LoreHub server."));
+        return;
+    }
+
+    // Reuse the exact same directories/grants-building logic as saveConfig()
+    // by re-tagging the already-loaded directory/role node lists with the
+    // "type" field that buildGraphJson() expects — m_directoryNodes and
+    // m_roleNodes are stored split (as loadConfig() left them), but the
+    // shared helper works on one combined, type-tagged list.
+    QVariantList combinedNodes;
+    for (const QVariant &nodeVariant : m_directoryNodes) {
+        QVariantMap node = nodeVariant.toMap();
+        node[QStringLiteral("type")] = QStringLiteral("directory");
+        combinedNodes.append(node);
+    }
+    for (const QVariant &nodeVariant : m_roleNodes) {
+        QVariantMap node = nodeVariant.toMap();
+        node[QStringLiteral("type")] = QStringLiteral("role");
+        combinedNodes.append(node);
+    }
+
+    QJsonArray directoriesArray;
+    QJsonArray rolesArray;
+    buildGraphJson(combinedNodes, m_connections, directoriesArray, rolesArray);
+
+    // Translate the directories-with-grants shape into
+    // HashMap<path, Vec<AccessEntry>> (lorehub-api's models.rs): each grant
+    // becomes one AccessEntry. The node-editor graph has no per-grant
+    // user/team distinction, so every grant is a "team" principal.
+    QJsonObject payload;
+    QStringList appliedPaths;
+    for (const QJsonValue &directoryValue : directoriesArray) {
+        const QJsonObject directory = directoryValue.toObject();
+        const QString path = directory.value(QStringLiteral("path")).toString();
+        if (path.isEmpty())
+            continue;
+
+        QJsonArray entries;
+        for (const QJsonValue &grantValue : directory.value(QStringLiteral("grants")).toArray()) {
+            const QJsonObject grant = grantValue.toObject();
+            QJsonObject entry;
+            entry[QStringLiteral("principal")] = grant.value(QStringLiteral("principal"));
+            entry[QStringLiteral("principalType")] = QStringLiteral("team");
+            entry[QStringLiteral("permissions")] = grant.value(QStringLiteral("permissions"));
+            entries.append(entry);
+        }
+        payload[path] = entries;
+        appliedPaths.append(path);
+    }
+
+    if (payload.isEmpty()) {
+        setApplyError(QStringLiteral("No directories to apply — add at least one directory node first."));
+        return;
+    }
+
+    setApplying(true);
+    setApplyError(QString());
+    setApplySuccess(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + QStringLiteral("/api/access-control/entries")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QNetworkReply *reply = ApiClient::networkManager().put(request, QJsonDocument(payload).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, appliedPaths]() {
+        setApplying(false);
+        const QByteArray data = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString message = QStringLiteral("Failed to apply access control configuration.");
+            const QJsonObject obj = QJsonDocument::fromJson(data).object();
+            if (obj.contains(QStringLiteral("error")))
+                message = obj.value(QStringLiteral("error")).toString();
+            setApplyError(message);
+            reply->deleteLater();
+            return;
+        }
+
+        setApplySuccess(QStringLiteral("Applied to LoreHub server: %1").arg(appliedPaths.join(QStringLiteral(", "))));
+        reply->deleteLater();
+    });
 }

@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -32,6 +32,8 @@ qt_add_qml_module(LoreForgeServerAdmin
         qml/DirectoryNode.qml
         qml/RoleNode.qml
     SOURCES
+        src/ApiClient.h
+        src/ApiClient.cpp
         src/DockerController.h
         src/DockerController.cpp
         src/LoreServerController.h
@@ -52,6 +54,7 @@ target_link_libraries(LoreForgeServerAdmin
         Qt6::Qml
         Qt6::Quick
         Qt6::QuickControls2
+        Qt6::Network
 )
 
 set_target_properties(LoreForgeServerAdmin PROPERTIES

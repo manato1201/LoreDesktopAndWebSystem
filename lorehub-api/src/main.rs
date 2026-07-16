@@ -41,6 +41,7 @@ async fn main() {
             Method::GET,
             Method::POST,
             Method::PATCH,
+            Method::PUT,
             Method::DELETE,
             Method::OPTIONS,
         ])
@@ -119,7 +120,7 @@ async fn main() {
         .route("/api/pulls/{id}/comments", post(handlers::add_comment))
         .route(
             "/api/access-control/entries",
-            get(handlers::get_access_entries),
+            get(handlers::get_access_entries).put(handlers::apply_access_entries),
         )
         .route(
             "/api/access-control/entries/toggle",
