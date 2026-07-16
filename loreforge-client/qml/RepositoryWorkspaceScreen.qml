@@ -542,6 +542,278 @@ Item {
 
                     Item { Layout.preferredHeight: Theme.spacingUnit }
 
+                    // --- Binary Diff Viewer (ARCHITECTURE.md §2.3) ---
+                    // Image kind: draggable before/after slider, ported from
+                    // lorehub-web's ImageDiffSlider.tsx. Both "current" and
+                    // "before" bytes come from lorehub-api's authenticated
+                    // image endpoints via the image://lore/... provider
+                    // (LoreImageProvider) rather than a plain Image element,
+                    // since a plain Image would bypass ApiClient's shared
+                    // cookie jar and 401.
+                    Item {
+                        id: imagePreview
+                        visible: workspace.selectedFile.kind === "image"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 180
+
+                        property real sliderPosition: 50
+
+                        Connections {
+                            target: workspace
+                            function onSelectedPathChanged() { imagePreview.sliderPosition = 50 }
+                        }
+
+                        Keys.onLeftPressed: imagePreview.sliderPosition = Math.max(0, imagePreview.sliderPosition - 5)
+                        Keys.onRightPressed: imagePreview.sliderPosition = Math.min(100, imagePreview.sliderPosition + 5)
+
+                        Rectangle {
+                            id: previewFrame
+                            anchors.fill: parent
+                            radius: Theme.radiusComfortable
+                            color: Theme.colorSurfaceElevated
+                            clip: true
+
+                            Image {
+                                id: afterImage
+                                anchors.fill: parent
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                                cache: false
+                                source: (imagePreview.visible && workspace.selectedFile.path)
+                                    ? "image://lore/" + workspace.slug + "/current/" + workspace.selectedFile.path
+                                    : ""
+                            }
+
+                            Item {
+                                id: beforeClip
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: previewFrame.width * (imagePreview.sliderPosition / 100)
+                                clip: true
+
+                                Image {
+                                    id: beforeImage
+                                    width: previewFrame.width
+                                    height: previewFrame.height
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    cache: false
+                                    source: (imagePreview.visible && workspace.selectedFile.path)
+                                        ? "image://lore/" + workspace.slug + "/before/" + workspace.selectedFile.path
+                                        : ""
+                                }
+                            }
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.margins: Theme.spacingUnit
+                                implicitWidth: beforeLabel.implicitWidth + Theme.spacingUnit * 2
+                                implicitHeight: 20
+                                radius: height / 2
+                                color: Qt.rgba(0, 0, 0, 0.55)
+
+                                Text {
+                                    id: beforeLabel
+                                    anchors.centerIn: parent
+                                    text: "Before"
+                                    color: Theme.colorTextSecondary
+                                    font.bold: true
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            Rectangle {
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: Theme.spacingUnit
+                                implicitWidth: afterLabel.implicitWidth + Theme.spacingUnit * 2
+                                implicitHeight: 20
+                                radius: height / 2
+                                color: Qt.rgba(0, 0, 0, 0.55)
+
+                                Text {
+                                    id: afterLabel
+                                    anchors.centerIn: parent
+                                    text: "After"
+                                    color: Theme.colorTextSecondary
+                                    font.bold: true
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            Rectangle {
+                                width: 2
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                x: previewFrame.width * (imagePreview.sliderPosition / 100) - width / 2
+                                color: Theme.colorTextPrimary
+                            }
+
+                            Rectangle {
+                                width: 26
+                                height: 26
+                                radius: 13
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: previewFrame.width * (imagePreview.sliderPosition / 100) - width / 2
+                                color: Theme.colorTextPrimary
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "⇔"
+                                    color: Theme.colorBackgroundBase
+                                    font.bold: true
+                                    font.pixelSize: Theme.fontSizeCaption
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.SizeHorCursor
+                                onPressed: (mouse) => {
+                                    imagePreview.forceActiveFocus()
+                                    imagePreview.sliderPosition = Math.min(100, Math.max(0, (mouse.x / previewFrame.width) * 100))
+                                }
+                                onPositionChanged: (mouse) => {
+                                    if (pressed)
+                                        imagePreview.sliderPosition = Math.min(100, Math.max(0, (mouse.x / previewFrame.width) * 100))
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: imagePreview.visible
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        text: "Drag or use arrow keys to compare"
+                        color: Theme.colorTextSecondary
+                        font.pixelSize: Theme.fontSizeSmall
+                    }
+
+                    // 3D kind: Before/After pill toggle around a stylized
+                    // wireframe stand-in, ported from lorehub-web's
+                    // Model3DDiffToggle.tsx (whose own "3D viewer" is
+                    // likewise a procedural Three.js placeholder, not a real
+                    // FBX/OBJ loader — no QtQuick3D/Qt3D dependency here).
+                    Item {
+                        id: modelPreview
+                        visible: workspace.selectedFile.kind === "model3d"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 210
+
+                        property string variant: "after" // "before" | "after"
+
+                        Connections {
+                            target: workspace
+                            function onSelectedPathChanged() { modelPreview.variant = "after" }
+                        }
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: Theme.spacingUnit
+
+                            Rectangle {
+                                id: togglePill
+                                Layout.alignment: Qt.AlignHCenter
+                                implicitWidth: toggleRow.implicitWidth + Theme.spacingUnit
+                                implicitHeight: 30
+                                radius: height / 2
+                                color: Theme.colorSurfaceInteractive
+
+                                RowLayout {
+                                    id: toggleRow
+                                    anchors.centerIn: parent
+                                    spacing: 2
+
+                                    Repeater {
+                                        model: ["before", "after"]
+
+                                        delegate: Rectangle {
+                                            implicitWidth: variantLabel.implicitWidth + Theme.spacingUnit * 2
+                                            implicitHeight: 24
+                                            radius: height / 2
+                                            color: modelPreview.variant === modelData ? Theme.colorAccent : "transparent"
+
+                                            Text {
+                                                id: variantLabel
+                                                anchors.centerIn: parent
+                                                text: modelData === "before" ? "Before" : "After"
+                                                color: modelPreview.variant === modelData ? Theme.colorBackgroundBase : Theme.colorTextSecondary
+                                                font.bold: true
+                                                font.pixelSize: Theme.fontSizeSmall
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: modelPreview.variant = modelData
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 140
+                                radius: Theme.radiusComfortable
+                                color: Theme.colorSurfaceElevated
+
+                                // Purely illustrative wireframe silhouette —
+                                // re-angled and re-colored between variants
+                                // so the toggle visibly does something.
+                                Item {
+                                    anchors.centerIn: parent
+                                    width: 96
+                                    height: 96
+                                    rotation: modelPreview.variant === "before" ? -10 : 10
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: Theme.radiusStandard
+                                        color: "transparent"
+                                        border.width: 2
+                                        border.color: modelPreview.variant === "before" ? Theme.colorBorderLight : Theme.colorAccent
+                                    }
+
+                                    Rectangle {
+                                        width: parent.width * 0.58
+                                        height: parent.height * 0.58
+                                        anchors.centerIn: parent
+                                        rotation: 45
+                                        radius: Theme.radiusSubtle
+                                        color: "transparent"
+                                        border.width: 2
+                                        border.color: modelPreview.variant === "before" ? Theme.colorBorderLight : Theme.colorAccent
+                                    }
+
+                                    Rectangle {
+                                        width: 2
+                                        height: parent.height
+                                        anchors.centerIn: parent
+                                        color: modelPreview.variant === "before" ? Theme.colorBorderLight : Theme.colorAccent
+                                    }
+
+                                    Rectangle {
+                                        width: parent.width
+                                        height: 2
+                                        anchors.centerIn: parent
+                                        color: modelPreview.variant === "before" ? Theme.colorBorderLight : Theme.colorAccent
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: (modelPreview.variant === "before" ? "Before" : "After") + " — " + (workspace.selectedFile.name || "")
+                                color: Theme.colorTextSecondary
+                                font.pixelSize: Theme.fontSizeSmall
+                            }
+                        }
+                    }
+
                     Text {
                         text: "Size: " + (workspace.selectedFile.sizeLabel || "—")
                         color: Theme.colorTextSecondary
