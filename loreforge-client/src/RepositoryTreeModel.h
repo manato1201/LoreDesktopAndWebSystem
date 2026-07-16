@@ -19,6 +19,7 @@ struct TreeItem
     QString updatedAt;
     QString lockedBy; // empty when unlocked
     bool expanded = false;
+    bool included = false; // Sparse Workspace Manager: is this directory "checked out"?
     QVector<TreeItem> children;
 };
 
@@ -56,6 +57,7 @@ public:
         ExpandedRole,
         IsDirectoryRole,
         StagedChangeTypeRole,
+        IncludedRole,
     };
 
     explicit RepositoryTreeModel(QObject *parent = nullptr);
@@ -73,6 +75,16 @@ public:
     Q_INVOKABLE void toggleExpanded(const QString &path);
     Q_INVOKABLE void toggleLock(const QString &path, bool lock);
     Q_INVOKABLE QVariantMap rowForPath(const QString &path) const;
+
+    /**
+     * Sparse Workspace Manager: flips whether `path` (must be a directory)
+     * is "checked out" into the local workspace view. Including a directory
+     * reveals its immediate children (still excluded themselves, one level
+     * at a time). Excluding a directory cascades exclusion to any included
+     * descendant so nothing is left orphaned. Persisted via QSettings,
+     * keyed by repo slug + path, so it survives an app relaunch.
+     */
+    Q_INVOKABLE void toggleWorkspaceInclusion(const QString &path);
 
     /** POSTs .../tree/stage with staged=true and the given changeType. */
     Q_INVOKABLE void stageChange(const QString &path, const QString &changeType);
@@ -100,6 +112,7 @@ private:
         bool hasChildren = false;
         bool expanded = false;
         bool isDirectory = false;
+        bool included = false;
     };
 
     void setBusy(bool busy);
@@ -111,6 +124,9 @@ private:
     void collectExpanded(const QVector<TreeItem> &nodes, QMap<QString, bool> &state) const;
     static void applyExpandedState(QVector<TreeItem> &nodes, const QMap<QString, bool> &state,
                                     bool firstLoad, int depth);
+    void applyInclusionState(QVector<TreeItem> &nodes, int depth) const;
+    void cascadeExcludeChildren(QVector<TreeItem> &nodes) const;
+    void saveInclusion(const QString &path, bool included) const;
     void rebuildFlatRows();
     static void flattenInto(const QVector<TreeItem> &nodes, int depth, QVector<FlatRow> &out,
                              const QMap<QString, QString> &staged);

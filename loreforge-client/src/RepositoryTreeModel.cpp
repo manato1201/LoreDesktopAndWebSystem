@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSettings>
 #include <QUrl>
 
 RepositoryTreeModel::RepositoryTreeModel(QObject *parent)
@@ -49,6 +50,8 @@ QVariant RepositoryTreeModel::data(const QModelIndex &index, int role) const
         return row.isDirectory;
     case StagedChangeTypeRole:
         return row.stagedChangeType;
+    case IncludedRole:
+        return row.included;
     default:
         return {};
     }
@@ -68,6 +71,7 @@ QHash<int, QByteArray> RepositoryTreeModel::roleNames() const
         { ExpandedRole, "expanded" },
         { IsDirectoryRole, "isDirectory" },
         { StagedChangeTypeRole, "stagedChangeType" },
+        { IncludedRole, "included" },
     };
 }
 
@@ -109,8 +113,41 @@ void RepositoryTreeModel::toggleExpanded(const QString &path)
     TreeItem *item = findByPath(m_roots, path);
     if (!item || item->kind != QLatin1String("directory"))
         return;
+    // Sparse Workspace Manager: a directory not yet "checked out" into the
+    // workspace has no arrow in the UI (it shows a "+" affordance instead),
+    // but guard here too in case something else calls this directly.
+    if (!item->included)
+        return;
 
     item->expanded = !item->expanded;
+
+    beginResetModel();
+    rebuildFlatRows();
+    endResetModel();
+    emit countChanged();
+}
+
+void RepositoryTreeModel::toggleWorkspaceInclusion(const QString &path)
+{
+    TreeItem *item = findByPath(m_roots, path);
+    if (!item || item->kind != QLatin1String("directory"))
+        return;
+
+    const bool nowIncluded = !item->included;
+    item->included = nowIncluded;
+
+    if (nowIncluded) {
+        // Reveal this directory's immediate children right away, matching
+        // the "+" affordance's promise — children stay excluded themselves
+        // (one level at a time), per real sparse-checkout semantics.
+        item->expanded = true;
+    } else {
+        item->expanded = false;
+        // Don't leave orphaned included children under an excluded parent.
+        cascadeExcludeChildren(item->children);
+    }
+
+    saveInclusion(path, nowIncluded);
 
     beginResetModel();
     rebuildFlatRows();
@@ -164,6 +201,7 @@ QVariantMap RepositoryTreeModel::rowForPath(const QString &path) const
             map["expanded"] = row.expanded;
             map["isDirectory"] = row.isDirectory;
             map["stagedChangeType"] = row.stagedChangeType;
+            map["included"] = row.included;
             return map;
         }
     }
@@ -273,6 +311,10 @@ void RepositoryTreeModel::applyTreeJson(const QJsonArray &array)
 
     QVector<TreeItem> parsed = parseNodes(array);
     applyExpandedState(parsed, expandedState, firstLoad, 0);
+    // Sparse Workspace Manager: inclusion is client-local persisted state
+    // (QSettings), unrelated to the expand/collapse session state above —
+    // reload it fresh from disk every time the tree arrives from the server.
+    applyInclusionState(parsed, 0);
 
     beginResetModel();
     m_roots = parsed;
@@ -332,6 +374,53 @@ void RepositoryTreeModel::applyExpandedState(QVector<TreeItem> &nodes, const QMa
     }
 }
 
+void RepositoryTreeModel::applyInclusionState(QVector<TreeItem> &nodes, int depth) const
+{
+    if (m_slug.isEmpty())
+        return;
+
+    // Sparse Workspace Manager default: top-level directories start
+    // "checked out" so a first-time user sees something rather than an
+    // empty, all-collapsed tree; anything deeper starts excluded until the
+    // user explicitly opts in.
+    const bool defaultIncluded = depth == 0;
+
+    QSettings settings;
+    settings.beginGroup(QLatin1String("SparseWorkspace/") + m_slug);
+    for (TreeItem &n : nodes) {
+        if (n.kind == QLatin1String("directory")) {
+            n.included = settings.value(n.path, defaultIncluded).toBool();
+            applyInclusionState(n.children, depth + 1);
+        }
+    }
+    settings.endGroup();
+}
+
+void RepositoryTreeModel::cascadeExcludeChildren(QVector<TreeItem> &nodes) const
+{
+    for (TreeItem &n : nodes) {
+        if (n.kind != QLatin1String("directory"))
+            continue;
+        if (n.included) {
+            n.included = false;
+            saveInclusion(n.path, false);
+        }
+        n.expanded = false;
+        cascadeExcludeChildren(n.children);
+    }
+}
+
+void RepositoryTreeModel::saveInclusion(const QString &path, bool included) const
+{
+    if (m_slug.isEmpty())
+        return;
+
+    QSettings settings;
+    settings.beginGroup(QLatin1String("SparseWorkspace/") + m_slug);
+    settings.setValue(path, included);
+    settings.endGroup();
+}
+
 void RepositoryTreeModel::rebuildFlatRows()
 {
     m_flatRows.clear();
@@ -354,9 +443,14 @@ void RepositoryTreeModel::flattenInto(const QVector<TreeItem> &nodes, int depth,
         row.isDirectory = n.kind == QLatin1String("directory");
         row.hasChildren = row.isDirectory && !n.children.isEmpty();
         row.expanded = n.expanded;
+        row.included = n.included;
         out.append(row);
 
-        if (row.isDirectory && n.expanded)
+        // A directory that isn't included (checked out) into the workspace
+        // still shows its own row (so the "+" affordance is reachable) but
+        // collapses its children out of the flattened list entirely — same
+        // mechanism as the expanded-gate below, just a second condition.
+        if (row.isDirectory && n.expanded && n.included)
             flattenInto(n.children, depth + 1, out, staged);
     }
 }
