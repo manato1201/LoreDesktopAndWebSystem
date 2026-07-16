@@ -41,19 +41,29 @@ impl AppContext {
 pub struct AppState {
     pub repositories: Vec<Repository>,
     /// Slugs of repositories that have seeded tree/commit/branch demo data.
-    /// `tree`/`commits`/`branches` below are a single shared demo dataset
-    /// (not keyed per-repository) reused by every seeded repo; repos
-    /// created later via `POST /api/repositories` are intentionally left
-    /// out of this set so their Code/Commits tabs report an empty (but
-    /// valid, non-404) tree/history instead of inheriting the demo data.
+    /// `tree`/`commits`/`branches` below are keyed by repository slug; every
+    /// slug in this set gets its own clone of the shared demo dataset at
+    /// seed time. Repos created later via `POST /api/repositories` are
+    /// intentionally left out of this set (and out of the three maps) so
+    /// their Code/Commits tabs report an empty (but valid, non-404)
+    /// tree/history instead of inheriting the demo data.
     pub seeded_repo_slugs: HashSet<String>,
-    pub tree: Vec<TreeNode>,
+    /// Per-repository file tree, keyed by repository slug.
+    pub tree: HashMap<String, Vec<TreeNode>>,
     pub file_contents: HashMap<String, String>,
     pub image_content: HashMap<String, String>,
     pub image_content_before: HashMap<String, String>,
     pub audio_content: HashMap<String, Vec<u8>>,
-    pub commits: Vec<Commit>,
-    pub branches: Vec<Branch>,
+    /// Per-repository commit history (oldest first within each vec), keyed
+    /// by repository slug.
+    pub commits: HashMap<String, Vec<Commit>>,
+    /// Per-repository branch list, keyed by repository slug.
+    pub branches: HashMap<String, Vec<Branch>>,
+    /// Repository slug -> currently checked-out branch name. Absent means
+    /// "main" (the default branch in every seeded repo).
+    pub current_branch: HashMap<String, String>,
+    /// Repository slug -> staged-but-not-committed file changes.
+    pub pending_changes: HashMap<String, Vec<FileChange>>,
     pub pull_requests: Vec<PullRequest>,
     pub access_entries: HashMap<String, Vec<AccessEntry>>,
     pub org_members: Vec<OrgMember>,
@@ -80,9 +90,9 @@ impl AppState {
         );
     }
 
-    /// Recursively sets `lockedBy` on the node at `path`. Returns `true` if
-    /// a matching node was found.
-    pub fn set_lock(&mut self, path: &str, locked_by: Option<String>) -> bool {
+    /// Recursively sets `lockedBy` on the node at `path` within `slug`'s
+    /// tree. Returns `true` if a matching node was found.
+    pub fn set_lock(&mut self, slug: &str, path: &str, locked_by: Option<String>) -> bool {
         fn walk(nodes: &mut [TreeNode], path: &str, locked_by: &Option<String>) -> bool {
             for node in nodes.iter_mut() {
                 if node.path() == path {
@@ -107,80 +117,19 @@ impl AppState {
             false
         }
 
-        walk(&mut self.tree, path, &locked_by)
+        let Some(tree) = self.tree.get_mut(slug) else {
+            return false;
+        };
+        walk(tree, path, &locked_by)
     }
 }
 
-pub fn seed() -> AppState {
-    let repositories = vec![
-        Repository {
-            slug: "starforge-vfx".into(),
-            name: "starforge-vfx".into(),
-            organization: "Nebula Studios".into(),
-            description: "Particle FX library and Niagara modules for the Starforge campaign."
-                .into(),
-            updated_at: "2h ago".into(),
-            size_label: "184 GB".into(),
-            locked_file_count: 3,
-            visibility: Visibility::Private,
-        },
-        Repository {
-            slug: "hollow-keep-env".into(),
-            name: "hollow-keep-env".into(),
-            organization: "Nebula Studios".into(),
-            description: "Environment art, terrain chunks, and lighting scenarios for Hollow Keep."
-                .into(),
-            updated_at: "6h ago".into(),
-            size_label: "512 GB".into(),
-            locked_file_count: 0,
-            visibility: Visibility::Private,
-        },
-        Repository {
-            slug: "character-rigs".into(),
-            name: "character-rigs".into(),
-            organization: "Nebula Studios".into(),
-            description: "Shared character skeletons, rigs, and animation retarget presets.".into(),
-            updated_at: "1d ago".into(),
-            size_label: "76 GB".into(),
-            locked_file_count: 1,
-            visibility: Visibility::Internal,
-        },
-        Repository {
-            slug: "audio-master".into(),
-            name: "audio-master".into(),
-            organization: "Nebula Studios".into(),
-            description: "Master audio sessions, foley captures, and mix stems.".into(),
-            updated_at: "2d ago".into(),
-            size_label: "212 GB".into(),
-            locked_file_count: 0,
-            visibility: Visibility::Private,
-        },
-        Repository {
-            slug: "cinematics-s2".into(),
-            name: "cinematics-s2".into(),
-            organization: "Nebula Studios".into(),
-            description: "Season 2 cinematic sequences, previs, and camera capture data.".into(),
-            updated_at: "3d ago".into(),
-            size_label: "1.1 TB".into(),
-            locked_file_count: 5,
-            visibility: Visibility::Private,
-        },
-        Repository {
-            slug: "shared-materials".into(),
-            name: "shared-materials".into(),
-            organization: "Nebula Studios".into(),
-            description: "Cross-project material library, substance graphs, and texture sets."
-                .into(),
-            updated_at: "5d ago".into(),
-            size_label: "98 GB".into(),
-            locked_file_count: 0,
-            visibility: Visibility::Public,
-        },
-    ];
-
-    let seeded_repo_slugs: HashSet<String> = repositories.iter().map(|r| r.slug.clone()).collect();
-
-    let tree = vec![
+/// The single demo file tree shared as a starting point by every seeded
+/// repository. Factored out of `seed()` so `db.rs` can rebuild the same
+/// per-slug map as a backward-compat fallback when an old on-disk save has
+/// the pre-refactor bare-`Vec` shape for the `"tree"` blob.
+pub fn demo_tree() -> Vec<TreeNode> {
+    vec![
         TreeNode::Directory {
             path: "Assets".into(),
             name: "Assets".into(),
@@ -265,12 +214,17 @@ pub fn seed() -> AppState {
             updated_at: "1w ago".into(),
             locked_by: None,
         },
-    ];
+    ]
+}
 
-    // Chronological order (oldest first): main has a linear base, then
-    // feature/dusk-skybox branches off and merges back in, while
-    // feature/hero-rig-retarget branches off and is still open.
-    let commits = vec![
+/// The single demo commit history shared as a starting point by every
+/// seeded repository. See [`demo_tree`] for why this is factored out.
+///
+/// Chronological order (oldest first): main has a linear base, then
+/// feature/dusk-skybox branches off and merges back in, while
+/// feature/hero-rig-retarget branches off and is still open.
+pub fn demo_commits() -> Vec<Commit> {
+    vec![
         Commit {
             hash: "0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into(),
             short_hash: "0f4a7b0".into(),
@@ -392,9 +346,13 @@ pub fn seed() -> AppState {
             branch: "feature/hero-rig-retarget".into(),
             parents: vec!["3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into()],
         },
-    ];
+    ]
+}
 
-    let branches = vec![
+/// The single demo branch list shared as a starting point by every seeded
+/// repository. See [`demo_tree`] for why this is factored out.
+pub fn demo_branches() -> Vec<Branch> {
+    vec![
         Branch {
             name: "main".into(),
             head: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
@@ -410,7 +368,98 @@ pub fn seed() -> AppState {
             head: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
             is_default: false,
         },
+    ]
+}
+
+/// Builds the per-slug tree map used both at first-run seed time and as the
+/// `db.rs` fallback when an old on-disk save can't be deserialized into the
+/// new map shape.
+pub fn seeded_tree(slugs: &HashSet<String>) -> HashMap<String, Vec<TreeNode>> {
+    slugs.iter().map(|s| (s.clone(), demo_tree())).collect()
+}
+
+/// See [`seeded_tree`].
+pub fn seeded_commits(slugs: &HashSet<String>) -> HashMap<String, Vec<Commit>> {
+    slugs.iter().map(|s| (s.clone(), demo_commits())).collect()
+}
+
+/// See [`seeded_tree`].
+pub fn seeded_branches(slugs: &HashSet<String>) -> HashMap<String, Vec<Branch>> {
+    slugs.iter().map(|s| (s.clone(), demo_branches())).collect()
+}
+
+pub fn seed() -> AppState {
+    let repositories = vec![
+        Repository {
+            slug: "starforge-vfx".into(),
+            name: "starforge-vfx".into(),
+            organization: "Nebula Studios".into(),
+            description: "Particle FX library and Niagara modules for the Starforge campaign."
+                .into(),
+            updated_at: "2h ago".into(),
+            size_label: "184 GB".into(),
+            locked_file_count: 3,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "hollow-keep-env".into(),
+            name: "hollow-keep-env".into(),
+            organization: "Nebula Studios".into(),
+            description: "Environment art, terrain chunks, and lighting scenarios for Hollow Keep."
+                .into(),
+            updated_at: "6h ago".into(),
+            size_label: "512 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "character-rigs".into(),
+            name: "character-rigs".into(),
+            organization: "Nebula Studios".into(),
+            description: "Shared character skeletons, rigs, and animation retarget presets.".into(),
+            updated_at: "1d ago".into(),
+            size_label: "76 GB".into(),
+            locked_file_count: 1,
+            visibility: Visibility::Internal,
+        },
+        Repository {
+            slug: "audio-master".into(),
+            name: "audio-master".into(),
+            organization: "Nebula Studios".into(),
+            description: "Master audio sessions, foley captures, and mix stems.".into(),
+            updated_at: "2d ago".into(),
+            size_label: "212 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "cinematics-s2".into(),
+            name: "cinematics-s2".into(),
+            organization: "Nebula Studios".into(),
+            description: "Season 2 cinematic sequences, previs, and camera capture data.".into(),
+            updated_at: "3d ago".into(),
+            size_label: "1.1 TB".into(),
+            locked_file_count: 5,
+            visibility: Visibility::Private,
+        },
+        Repository {
+            slug: "shared-materials".into(),
+            name: "shared-materials".into(),
+            organization: "Nebula Studios".into(),
+            description: "Cross-project material library, substance graphs, and texture sets."
+                .into(),
+            updated_at: "5d ago".into(),
+            size_label: "98 GB".into(),
+            locked_file_count: 0,
+            visibility: Visibility::Public,
+        },
     ];
+
+    let seeded_repo_slugs: HashSet<String> = repositories.iter().map(|r| r.slug.clone()).collect();
+
+    let tree = seeded_tree(&seeded_repo_slugs);
+    let commits = seeded_commits(&seeded_repo_slugs);
+    let branches = seeded_branches(&seeded_repo_slugs);
 
     let pull_requests = vec![
         PullRequest {
@@ -699,6 +748,8 @@ pub fn seed() -> AppState {
         audio_content,
         commits,
         branches,
+        current_branch: HashMap::new(),
+        pending_changes: HashMap::new(),
         pull_requests,
         access_entries,
         org_members,

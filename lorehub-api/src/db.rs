@@ -63,6 +63,25 @@ async fn load_blob<T: DeserializeOwned>(pool: &SqlitePool, key: &str) -> Option<
     })
 }
 
+/// Like [`load_blob`], but treats a value that fails to deserialize into
+/// `T` as absent (`None`) instead of panicking. Used for fields whose
+/// on-disk shape changed across a refactor (e.g. `tree`/`commits`/
+/// `branches` going from a bare `Vec` to a per-repo-slug `HashMap`) so an
+/// old `lorehub.db` doesn't crash the server on startup — the caller falls
+/// back to fresh defaults for that field instead.
+async fn load_blob_lenient<T: DeserializeOwned>(pool: &SqlitePool, key: &str) -> Option<T> {
+    let row = sqlx::query("SELECT value FROM kv_store WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .expect("query state blob");
+
+    row.and_then(|r| {
+        let value: String = r.get("value");
+        serde_json::from_str(&value).ok()
+    })
+}
+
 /// `None` means this is a first run (no prior save) — the caller should
 /// seed fresh demo data and call [`save_all`].
 pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
@@ -73,18 +92,36 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
         .await
         .unwrap_or_else(|| repositories.iter().map(|r| r.slug.clone()).collect());
 
+    // Older saves predate the tree/commits/branches per-repo-slug map
+    // refactor and still have the bare-`Vec` shape on disk for these three
+    // keys; `load_blob_lenient` swallows that deserialize failure and we
+    // fall back to a fresh per-slug clone of the demo dataset so existing
+    // seeded repos keep showing the same Code/Commits/Branches content they
+    // did before the refactor.
+    let tree = load_blob_lenient(pool, "tree")
+        .await
+        .unwrap_or_else(|| crate::state::seeded_tree(&seeded_repo_slugs));
+    let commits = load_blob_lenient(pool, "commits")
+        .await
+        .unwrap_or_else(|| crate::state::seeded_commits(&seeded_repo_slugs));
+    let branches = load_blob_lenient(pool, "branches")
+        .await
+        .unwrap_or_else(|| crate::state::seeded_branches(&seeded_repo_slugs));
+
     Some(AppState {
         repositories,
         seeded_repo_slugs,
-        tree: load_blob(pool, "tree").await.unwrap_or_default(),
+        tree,
         file_contents: load_blob(pool, "file_contents").await.unwrap_or_default(),
         image_content: load_blob(pool, "image_content").await.unwrap_or_default(),
         image_content_before: load_blob(pool, "image_content_before")
             .await
             .unwrap_or_default(),
         audio_content: load_blob(pool, "audio_content").await.unwrap_or_default(),
-        commits: load_blob(pool, "commits").await.unwrap_or_default(),
-        branches: load_blob(pool, "branches").await.unwrap_or_default(),
+        commits,
+        branches,
+        current_branch: load_blob(pool, "current_branch").await.unwrap_or_default(),
+        pending_changes: load_blob(pool, "pending_changes").await.unwrap_or_default(),
         pull_requests: load_blob(pool, "pull_requests").await.unwrap_or_default(),
         access_entries: load_blob(pool, "access_entries").await.unwrap_or_default(),
         org_members: load_blob(pool, "org_members").await.unwrap_or_default(),
@@ -111,6 +148,8 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "audio_content", &state.audio_content).await;
     save_blob(pool, "commits", &state.commits).await;
     save_blob(pool, "branches", &state.branches).await;
+    save_blob(pool, "current_branch", &state.current_branch).await;
+    save_blob(pool, "pending_changes", &state.pending_changes).await;
     save_blob(pool, "pull_requests", &state.pull_requests).await;
     save_blob(pool, "access_entries", &state.access_entries).await;
     save_blob(pool, "org_members", &state.org_members).await;

@@ -150,6 +150,145 @@ QVariantMap CommitListModel::rowForHash(const QString &hash) const
     return {};
 }
 
+void CommitListModel::refreshBranches(const QString &slug)
+{
+    m_slug = slug;
+
+    QNetworkRequest branchesRequest(QUrl(ApiClient::baseUrl() + "/api/repositories/" + slug + "/branches"));
+    QNetworkReply *branchesReply = ApiClient::networkManager().get(branchesRequest);
+    connect(branchesReply, &QNetworkReply::finished, this, [this, branchesReply]() {
+        if (branchesReply->error() == QNetworkReply::NoError) {
+            const QJsonArray array = QJsonDocument::fromJson(branchesReply->readAll()).array();
+            QVariantList branches;
+            branches.reserve(array.size());
+            for (const QJsonValue &value : array) {
+                const QJsonObject obj = value.toObject();
+                QVariantMap map;
+                map["name"] = obj.value("name").toString();
+                map["head"] = obj.value("head").toString();
+                map["isDefault"] = obj.value("isDefault").toBool();
+                branches.append(map);
+            }
+            m_branches = branches;
+            emit branchesChanged();
+        }
+        branchesReply->deleteLater();
+    });
+
+    QNetworkRequest currentRequest(QUrl(ApiClient::baseUrl() + "/api/repositories/" + slug + "/branches/current"));
+    QNetworkReply *currentReply = ApiClient::networkManager().get(currentRequest);
+    connect(currentReply, &QNetworkReply::finished, this, [this, currentReply]() {
+        if (currentReply->error() == QNetworkReply::NoError) {
+            const QJsonObject obj = QJsonDocument::fromJson(currentReply->readAll()).object();
+            setCurrentBranch(obj.value("branch").toString());
+        }
+        currentReply->deleteLater();
+    });
+}
+
+void CommitListModel::checkout(const QString &branch)
+{
+    if (m_slug.isEmpty() || branch.isEmpty())
+        return;
+
+    setErrorMessage(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/checkout"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["branch"] = branch;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray data = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString errorText = QStringLiteral("Failed to check out branch.");
+            const QJsonObject obj = QJsonDocument::fromJson(data).object();
+            if (obj.contains("error"))
+                errorText = obj.value("error").toString();
+            setErrorMessage(errorText);
+            reply->deleteLater();
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(data).object();
+        setCurrentBranch(obj.value("branch").toString());
+        reply->deleteLater();
+    });
+}
+
+void CommitListModel::createBranch(const QString &name)
+{
+    if (m_slug.isEmpty() || name.trimmed().isEmpty())
+        return;
+
+    setErrorMessage(QString());
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/branches"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["name"] = name;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, name]() {
+        const QByteArray data = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString errorText = QStringLiteral("Failed to create branch.");
+            const QJsonObject obj = QJsonDocument::fromJson(data).object();
+            if (obj.contains("error"))
+                errorText = obj.value("error").toString();
+            setErrorMessage(errorText);
+            reply->deleteLater();
+            return;
+        }
+
+        reply->deleteLater();
+        emit branchCreated(name);
+        refreshBranches(m_slug);
+    });
+}
+
+void CommitListModel::commit(const QString &message, const QString &description)
+{
+    if (m_slug.isEmpty() || message.trimmed().isEmpty())
+        return;
+
+    setErrorMessage(QString());
+    setBusy(true);
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/commits"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["message"] = message;
+    body["description"] = description;
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        setBusy(false);
+        const QByteArray data = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString errorText = QStringLiteral("Commit failed.");
+            const QJsonObject obj = QJsonDocument::fromJson(data).object();
+            if (obj.contains("error"))
+                errorText = obj.value("error").toString();
+            setErrorMessage(errorText);
+            reply->deleteLater();
+            return;
+        }
+
+        reply->deleteLater();
+        emit commitSucceeded();
+        refresh(m_slug);
+        refreshBranches(m_slug);
+    });
+}
+
 QVariantMap CommitListModel::toVariantMap(const CommitEntry &entry)
 {
     QVariantMap map;
@@ -195,4 +334,12 @@ void CommitListModel::setErrorMessage(const QString &message)
         return;
     m_errorMessage = message;
     emit errorMessageChanged();
+}
+
+void CommitListModel::setCurrentBranch(const QString &branch)
+{
+    if (m_currentBranch == branch)
+        return;
+    m_currentBranch = branch;
+    emit currentBranchChanged();
 }

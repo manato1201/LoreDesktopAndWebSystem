@@ -357,11 +357,7 @@ pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) 
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    if state.seeded_repo_slugs.contains(&slug) {
-        Json(state.tree.clone()).into_response()
-    } else {
-        Json(Vec::<TreeNode>::new()).into_response()
-    }
+    Json(state.tree.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +383,7 @@ pub async fn toggle_lock(
     } else {
         None
     };
-    let found = state.set_lock(&body.path, locked_by.clone());
+    let found = state.set_lock(&slug, &body.path, locked_by.clone());
     if !found {
         return not_found("file not found in tree");
     }
@@ -395,13 +391,14 @@ pub async fn toggle_lock(
     let action = if body.lock { "locked" } else { "unlocked" };
     state.record_audit(&user.name, action, &body.path);
 
+    let tree_for_repo = state.tree.get(&slug).cloned().unwrap_or_default();
     let tree = state.tree.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
     crate::db::save_blob(&ctx.db, "tree", &tree).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
-    Json(tree).into_response()
+    Json(tree_for_repo).into_response()
 }
 
 pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
@@ -409,11 +406,7 @@ pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<Strin
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    if state.seeded_repo_slugs.contains(&slug) {
-        Json(state.commits.clone()).into_response()
-    } else {
-        Json(Vec::<Commit>::new()).into_response()
-    }
+    Json(state.commits.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
 pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
@@ -421,11 +414,7 @@ pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<Stri
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    if state.seeded_repo_slugs.contains(&slug) {
-        Json(state.branches.clone()).into_response()
-    } else {
-        Json(Vec::<Branch>::new()).into_response()
-    }
+    Json(state.branches.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
 pub async fn get_commit(
@@ -436,10 +425,296 @@ pub async fn get_commit(
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
-    match state.commits.iter().find(|c| c.hash == hash) {
+    match state
+        .commits
+        .get(&slug)
+        .and_then(|commits| commits.iter().find(|c| c.hash == hash))
+    {
         Some(commit) => Json(commit.clone()).into_response(),
         None => not_found("commit not found"),
     }
+}
+
+pub async fn get_current_branch(
+    State(ctx): State<SharedState>,
+    Path(slug): Path<String>,
+) -> Response {
+    let state = ctx.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    let branch = state
+        .current_branch
+        .get(&slug)
+        .cloned()
+        .unwrap_or_else(|| "main".to_string());
+    Json(serde_json::json!({ "branch": branch })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckoutRequest {
+    pub branch: String,
+}
+
+pub async fn checkout_branch(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<CheckoutRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+
+    let exists = state
+        .branches
+        .get(&slug)
+        .map(|branches| branches.iter().any(|b| b.name == body.branch))
+        .unwrap_or(false);
+    if !exists {
+        return not_found("branch not found");
+    }
+
+    state
+        .current_branch
+        .insert(slug.clone(), body.branch.clone());
+
+    state.record_audit(
+        &user.name,
+        &format!("checked out branch {} on", body.branch),
+        &slug,
+    );
+
+    let branch = body.branch.clone();
+    let current_branch = state.current_branch.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "current_branch", &current_branch).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(serde_json::json!({ "branch": branch })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBranchRequest {
+    pub name: String,
+    pub from: Option<String>,
+}
+
+pub async fn create_branch(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<CreateBranchRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return bad_request("name is required");
+    }
+
+    let already_exists = state
+        .branches
+        .get(&slug)
+        .map(|branches| branches.iter().any(|b| b.name == name))
+        .unwrap_or(false);
+    if already_exists {
+        return bad_request("branch already exists");
+    }
+
+    let from_name = body.from.clone().unwrap_or_else(|| {
+        state
+            .current_branch
+            .get(&slug)
+            .cloned()
+            .unwrap_or_else(|| "main".to_string())
+    });
+
+    let head = state
+        .branches
+        .get(&slug)
+        .and_then(|branches| branches.iter().find(|b| b.name == from_name))
+        .map(|b| b.head.clone())
+        .unwrap_or_default();
+
+    let branch = Branch {
+        name: name.clone(),
+        head,
+        is_default: false,
+    };
+    state
+        .branches
+        .entry(slug.clone())
+        .or_default()
+        .push(branch.clone());
+
+    state.record_audit(&user.name, &format!("created branch {name} on"), &slug);
+
+    let branches = state.branches.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "branches", &branches).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    (StatusCode::CREATED, Json(branch)).into_response()
+}
+
+pub async fn get_pending_changes(
+    State(ctx): State<SharedState>,
+    Path(slug): Path<String>,
+) -> Response {
+    let state = ctx.read().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+    Json(
+        state
+            .pending_changes
+            .get(&slug)
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageRequest {
+    pub path: String,
+    pub change_type: FileChangeType,
+    /// `true` to stage the given path with `change_type`, `false` to
+    /// remove any pending entry for that path.
+    pub staged: bool,
+}
+
+pub async fn stage_change(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<StageRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+
+    let entries = state.pending_changes.entry(slug.clone()).or_default();
+    entries.retain(|c| c.path != body.path);
+    if body.staged {
+        entries.push(FileChange {
+            path: body.path.clone(),
+            change_type: body.change_type,
+            size_delta_label: "—".to_string(),
+        });
+    }
+
+    let action = if body.staged { "staged" } else { "unstaged" };
+    state.record_audit(&user.name, action, &body.path);
+
+    let pending_for_repo = state
+        .pending_changes
+        .get(&slug)
+        .cloned()
+        .unwrap_or_default();
+    let pending_changes = state.pending_changes.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "pending_changes", &pending_changes).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(pending_for_repo).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCommitRequest {
+    pub message: String,
+    pub description: Option<String>,
+}
+
+pub async fn create_commit(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<CreateCommitRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+
+    let message = body.message.trim().to_string();
+    if message.is_empty() {
+        return bad_request("message is required");
+    }
+
+    let changed_files = state
+        .pending_changes
+        .get(&slug)
+        .cloned()
+        .unwrap_or_default();
+    if changed_files.is_empty() {
+        return bad_request("nothing to commit");
+    }
+
+    let branch_name = state
+        .current_branch
+        .get(&slug)
+        .cloned()
+        .unwrap_or_else(|| "main".to_string());
+    let parent = state
+        .branches
+        .get(&slug)
+        .and_then(|branches| branches.iter().find(|b| b.name == branch_name))
+        .map(|b| b.head.clone());
+
+    let hash = auth::generate_commit_hash();
+    let short_hash = hash[..7].to_string();
+
+    let commit = Commit {
+        hash: hash.clone(),
+        short_hash,
+        message,
+        description: body.description.filter(|d| !d.trim().is_empty()),
+        author: user.name.clone(),
+        author_initials: user.initials.clone(),
+        timestamp: "just now".to_string(),
+        changed_files,
+        branch: branch_name.clone(),
+        parents: parent.into_iter().collect(),
+    };
+
+    state
+        .commits
+        .entry(slug.clone())
+        .or_default()
+        .push(commit.clone());
+
+    if let Some(branches) = state.branches.get_mut(&slug)
+        && let Some(branch) = branches.iter_mut().find(|b| b.name == branch_name)
+    {
+        branch.head = hash;
+    }
+
+    state.pending_changes.insert(slug.clone(), Vec::new());
+
+    state.record_audit(&user.name, "committed to", &slug);
+
+    let commits = state.commits.clone();
+    let branches = state.branches.clone();
+    let pending_changes = state.pending_changes.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "commits", &commits).await;
+    crate::db::save_blob(&ctx.db, "branches", &branches).await;
+    crate::db::save_blob(&ctx.db, "pending_changes", &pending_changes).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    (StatusCode::CREATED, Json(commit)).into_response()
 }
 
 #[derive(Debug, Deserialize)]
