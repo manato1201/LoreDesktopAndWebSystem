@@ -4,6 +4,7 @@
 #include <QQmlEngine>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
 
@@ -43,6 +44,12 @@ struct CommitEntry
  * dataset) and every other branch gets the next free lane number the first
  * time it appears — mirroring the lane-assignment idea in lorehub-web's
  * graph-layout.ts without building an actual graph.
+ *
+ * Also owns the write-path branch/commit operations (checkout, create
+ * branch, commit) since they're all "what's the state of this repo's
+ * history" concerns that the commit list already tracks — see
+ * RepositoryTreeModel for the parallel staging write-path, which is a
+ * tree/file concern instead.
  */
 class CommitListModel : public QAbstractListModel
 {
@@ -51,6 +58,8 @@ class CommitListModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
+    Q_PROPERTY(QString currentBranch READ currentBranch NOTIFY currentBranchChanged)
+    Q_PROPERTY(QVariantList branches READ branches NOTIFY branchesChanged)
 
 public:
     enum Roles {
@@ -75,22 +84,48 @@ public:
     int count() const { return static_cast<int>(m_commits.size()); }
     bool busy() const { return m_busy; }
     QString errorMessage() const { return m_errorMessage; }
+    QString currentBranch() const { return m_currentBranch; }
+    QVariantList branches() const { return m_branches; }
 
     Q_INVOKABLE void refresh(const QString &slug);
     Q_INVOKABLE QVariantMap rowForHash(const QString &hash) const;
+
+    /** Fetches GET .../branches and GET .../branches/current for `slug`. */
+    Q_INVOKABLE void refreshBranches(const QString &slug);
+    /** POSTs .../checkout; on success updates `currentBranch`. */
+    Q_INVOKABLE void checkout(const QString &branch);
+    /**
+     * POSTs .../branches (from defaults to the current branch server-side).
+     * On success, emits branchCreated(name) and re-fetches the branch list;
+     * QML is expected to follow up with checkout(name) to switch onto it.
+     */
+    Q_INVOKABLE void createBranch(const QString &name);
+    /**
+     * POSTs .../commits. On success emits commitSucceeded() and refreshes
+     * this model's own commit + branch state; callers should additionally
+     * refresh the tree model (staged changes are cleared server-side).
+     */
+    Q_INVOKABLE void commit(const QString &message, const QString &description);
 
 signals:
     void countChanged();
     void busyChanged();
     void errorMessageChanged();
+    void currentBranchChanged();
+    void branchesChanged();
+    void branchCreated(const QString &name);
+    void commitSucceeded();
 
 private:
     void setBusy(bool busy);
     void setErrorMessage(const QString &message);
+    void setCurrentBranch(const QString &branch);
     static QVariantMap toVariantMap(const CommitEntry &entry);
 
     QString m_slug;
     bool m_busy = false;
     QString m_errorMessage;
     QVector<CommitEntry> m_commits;
+    QString m_currentBranch;
+    QVariantList m_branches;
 };
