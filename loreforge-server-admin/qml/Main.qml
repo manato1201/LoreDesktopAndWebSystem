@@ -11,6 +11,8 @@ ApplicationWindow {
     title: "LoreForge Server Admin"
     color: Theme.colorBackgroundBase
 
+    property string activeTab: "environment" // "environment" | "access-control"
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.spacingUnit * 3
@@ -35,25 +37,65 @@ ApplicationWindow {
             }
         }
 
-        TabBar {
-            id: tabBar
+        RowLayout {
             Layout.fillWidth: true
-            background: Rectangle { color: "transparent" }
+            spacing: Theme.spacingUnit
 
-            TabButton {
-                text: "Environment"
-                font.pixelSize: Theme.fontSizeButton
+            Rectangle {
+                implicitWidth: environmentTabLabel.implicitWidth + Theme.spacingUnit * 3
+                implicitHeight: 32
+                radius: height / 2
+                color: window.activeTab === "environment" ? Theme.colorSurfaceElevated : "transparent"
+                border.width: window.activeTab === "environment" ? 0 : 1
+                border.color: Theme.colorBorder
+
+                Text {
+                    id: environmentTabLabel
+                    anchors.centerIn: parent
+                    text: "Environment"
+                    color: window.activeTab === "environment" ? Theme.colorTextPrimary : Theme.colorTextSecondary
+                    font.bold: window.activeTab === "environment"
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: window.activeTab = "environment"
+                }
             }
-            TabButton {
-                text: "Access Control"
-                font.pixelSize: Theme.fontSizeButton
+
+            Rectangle {
+                implicitWidth: accessControlTabLabel.implicitWidth + Theme.spacingUnit * 3
+                implicitHeight: 32
+                radius: height / 2
+                color: window.activeTab === "access-control" ? Theme.colorSurfaceElevated : "transparent"
+                border.width: window.activeTab === "access-control" ? 0 : 1
+                border.color: Theme.colorBorder
+
+                Text {
+                    id: accessControlTabLabel
+                    anchors.centerIn: parent
+                    text: "Access Control"
+                    color: window.activeTab === "access-control" ? Theme.colorTextPrimary : Theme.colorTextSecondary
+                    font.bold: window.activeTab === "access-control"
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: window.activeTab = "access-control"
+                }
             }
+
+            Item { Layout.fillWidth: true }
         }
 
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: tabBar.currentIndex
+            currentIndex: window.activeTab === "environment" ? 0 : 1
 
             EnvironmentPanel {}
             AccessControlPanel {}
