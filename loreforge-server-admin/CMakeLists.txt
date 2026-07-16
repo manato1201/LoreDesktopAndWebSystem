@@ -34,6 +34,8 @@ qt_add_qml_module(LoreForgeServerAdmin
     SOURCES
         src/DockerController.h
         src/DockerController.cpp
+        src/LoreServerController.h
+        src/LoreServerController.cpp
         src/PermissionConfigController.h
         src/PermissionConfigController.cpp
 )
