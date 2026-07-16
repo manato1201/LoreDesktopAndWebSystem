@@ -845,6 +845,38 @@ pub async fn toggle_permission(
     Json(entries).into_response()
 }
 
+/// Merges a partial access-control map from LoreForge Server Admin's
+/// node-editor "Apply" action into `state.access_entries` — insert-or-
+/// overwrite per path key, leaving any path not present in the body
+/// untouched. A full-replace would wipe demo paths the Server Admin graph
+/// doesn't model (e.g. "Source").
+pub async fn apply_access_entries(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Json(body): Json<HashMap<String, Vec<AccessEntry>>>,
+) -> Response {
+    let mut state = ctx.write().await;
+    let mut applied_paths: Vec<String> = body.keys().cloned().collect();
+    applied_paths.sort();
+    for (path, entries) in body {
+        state.access_entries.insert(path, entries);
+    }
+
+    state.record_audit(
+        &user.name,
+        "applied access control configuration from Server Admin",
+        &applied_paths.join(", "),
+    );
+
+    let access_entries = state.access_entries.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "access_entries", &access_entries).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    Json(access_entries).into_response()
+}
+
 pub async fn list_members(State(ctx): State<SharedState>) -> Json<Vec<OrgMember>> {
     let state = ctx.read().await;
     Json(state.org_members.clone())

@@ -225,6 +225,129 @@ Rectangle {
             wrapMode: Text.WordWrap
         }
 
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spacingUnit
+            height: applyRow.implicitHeight + Theme.spacingUnit * 2
+            radius: Theme.radiusStandard
+            color: Theme.colorSurfaceInteractive
+            border.color: Theme.colorBorderLight
+            border.width: 1
+
+            RowLayout {
+                id: applyRow
+                anchors.fill: parent
+                anchors.margins: Theme.spacingUnit
+                spacing: Theme.spacingUnit
+
+                Text {
+                    text: permissionConfig.connected
+                          ? "Connected as " + permissionConfig.connectedAs
+                          : "Not connected to the LoreHub server."
+                    color: permissionConfig.connected ? Theme.colorAccent : Theme.colorTextSecondary
+                    font.pixelSize: Theme.fontSizeSmall
+                    Layout.preferredWidth: 200
+                    wrapMode: Text.WordWrap
+                }
+
+                Rectangle {
+                    visible: !permissionConfig.connected
+                    Layout.preferredWidth: 160
+                    height: 32
+                    radius: Theme.radiusStandard
+                    color: Theme.colorSurface
+                    border.width: emailField.activeFocus ? 1 : 0
+                    border.color: Theme.colorAccent
+
+                    TextInput {
+                        id: emailField
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingUnit * 0.5
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: Theme.colorTextPrimary
+                        font.pixelSize: Theme.fontSizeSmall
+                        selectByMouse: true
+                        text: "aiko.tanaka@nebula.studio"
+                        KeyNavigation.tab: passwordField
+                    }
+                }
+
+                Rectangle {
+                    visible: !permissionConfig.connected
+                    Layout.preferredWidth: 120
+                    height: 32
+                    radius: Theme.radiusStandard
+                    color: Theme.colorSurface
+                    border.width: passwordField.activeFocus ? 1 : 0
+                    border.color: Theme.colorAccent
+
+                    TextInput {
+                        id: passwordField
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingUnit * 0.5
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: Theme.colorTextPrimary
+                        font.pixelSize: Theme.fontSizeSmall
+                        echoMode: TextInput.Password
+                        selectByMouse: true
+                        text: "lorehub"
+                        Keys.onReturnPressed: permissionConfig.login(emailField.text, passwordField.text)
+                    }
+                }
+
+                Button {
+                    visible: !permissionConfig.connected
+                    text: "Connect"
+                    onClicked: permissionConfig.login(emailField.text, passwordField.text)
+
+                    background: Rectangle {
+                        radius: Theme.radiusStandard
+                        color: "transparent"
+                        border.color: Theme.colorBorderLight
+                        border.width: 1
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: Theme.colorTextPrimary
+                        font.pixelSize: Theme.fontSizeButton
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: permissionConfig.applying ? "Applying…" : "Apply to LoreHub Server"
+                    enabled: permissionConfig.connected && panel.directoryModel.length > 0 && !permissionConfig.applying
+                    onClicked: permissionConfig.applyToServer()
+
+                    background: Rectangle {
+                        radius: Theme.radiusStandard
+                        opacity: parent.enabled ? 1.0 : 0.5
+                        color: parent.hovered ? Theme.colorAccentBorder : Theme.colorAccent
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#121212"
+                        font.bold: true
+                        font.pixelSize: Theme.fontSizeButton
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: permissionConfig.applyError.length > 0 ? permissionConfig.applyError : permissionConfig.applySuccess
+            visible: permissionConfig.applyError.length > 0 || permissionConfig.applySuccess.length > 0
+            color: permissionConfig.applyError.length > 0 ? Theme.colorNegative : Theme.colorAccent
+            font.pixelSize: Theme.fontSizeSmall
+            wrapMode: Text.WordWrap
+        }
+
         Item {
             id: canvasArea
             Layout.fillWidth: true
