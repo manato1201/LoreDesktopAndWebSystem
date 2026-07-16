@@ -389,16 +389,65 @@ Item {
                             : rowMouse.containsMouse ? Theme.colorSurfaceInteractive : "transparent"
 
                         RowLayout {
+                            // Above the full-row rowMouse (declared below, default
+                            // z 0) so nested controls — staged-change squares, and
+                            // the Sparse Workspace Manager's +/x affordances — take
+                            // priority for clicks over the row-wide expand handler.
+                            z: 1
                             anchors.fill: parent
                             anchors.leftMargin: Theme.spacingUnit + model.depth * (Theme.spacingUnit * 2)
                             anchors.rightMargin: Theme.spacingUnit
                             spacing: Theme.spacingUnit
 
+                            // Expand/collapse arrow — only for directories already
+                            // included (checked out) into the sparse workspace.
                             Text {
+                                visible: !model.isDirectory || treeRow.rowIncluded
                                 text: model.isDirectory ? (model.expanded ? "▾" : "▸") : ""
                                 color: Theme.colorTextSecondary
                                 font.pixelSize: Theme.fontSizeSmall
                                 Layout.preferredWidth: 14
+                            }
+
+                            // Sparse Workspace Manager: a directory not yet checked
+                            // out shows a "+" affordance in the arrow's slot instead.
+                            Text {
+                                visible: model.isDirectory && !treeRow.rowIncluded
+                                text: "+"
+                                color: Theme.colorAccent
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.bold: true
+                                Layout.preferredWidth: 14
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (workspace.treeModel)
+                                            workspace.treeModel.toggleWorkspaceInclusion(treeRow.rowPath)
+                                    }
+                                }
+                            }
+
+                            // Small always-visible affordance to remove an included
+                            // directory from the workspace again (no popup/menu
+                            // component exists in this codebase, so a second icon
+                            // next to the arrow is preferred over a context menu).
+                            Text {
+                                visible: model.isDirectory && treeRow.rowIncluded
+                                text: "✕"
+                                color: Theme.colorTextSecondary
+                                font.pixelSize: 10
+                                Layout.preferredWidth: 12
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (workspace.treeModel)
+                                            workspace.treeModel.toggleWorkspaceInclusion(treeRow.rowPath)
+                                    }
+                                }
                             }
 
                             Rectangle {
@@ -417,8 +466,8 @@ Item {
                             }
 
                             Text {
-                                text: model.name
-                                color: Theme.colorTextPrimary
+                                text: model.name + (model.isDirectory && !treeRow.rowIncluded ? "  ·  not in workspace" : "")
+                                color: (model.isDirectory && !treeRow.rowIncluded) ? Theme.colorTextSecondary : Theme.colorTextPrimary
                                 font.pixelSize: Theme.fontSizeCaption
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
@@ -494,6 +543,10 @@ Item {
                         property string rowPath: model.path
                         property string stagedType: model.stagedChangeType
                         property bool rowIsDirectory: model.isDirectory
+                        // Sparse Workspace Manager inclusion flag; files have no
+                        // meaningful "included" role, so default them to true so
+                        // none of the directory-only visuals above apply to them.
+                        property bool rowIncluded: model.isDirectory ? model.included : true
 
                         MouseArea {
                             id: rowMouse
