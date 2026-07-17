@@ -94,13 +94,20 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | GET | `/api/repositories/{slug}/image-before/{*path}` | 画像Before(diff用) |
 | GET | `/api/repositories/{slug}/audio/{*path}` | 音声プレビュー(WAV) |
 | GET | `/api/repositories/{slug}/commits` | コミット履歴(ブランチ情報込み) |
+| POST | `/api/repositories/{slug}/commits` | ステージ済み変更からコミット作成 |
 | GET | `/api/repositories/{slug}/commits/{hash}` | コミット詳細 |
 | GET | `/api/repositories/{slug}/branches` | ブランチ一覧 |
+| POST | `/api/repositories/{slug}/branches` | ブランチ作成 |
+| GET | `/api/repositories/{slug}/branches/current` | 現在のブランチ名 |
+| POST | `/api/repositories/{slug}/checkout` | ブランチ切替 |
+| GET | `/api/repositories/{slug}/pending` | ステージ済み変更一覧 |
+| POST | `/api/repositories/{slug}/tree/stage` | ファイルのステージ/アンステージ |
 | GET | `/api/pulls?status=` | PR一覧(status絞り込み) |
 | GET | `/api/pulls/{id}` | PR詳細+差分 |
 | POST | `/api/pulls/{id}/comments` | PRへのコメント追加 |
 | GET | `/api/access-control/entries` | パス別アクセス権限一覧 |
 | POST | `/api/access-control/entries/toggle` | 権限トグル |
+| PUT | `/api/access-control/entries` | 権限グラフの一括Apply(パスごとにマージ) |
 | GET | `/api/org/members` | 組織メンバー一覧 |
 | PATCH | `/api/org/members/{email}` | メンバーのロール変更 |
 | GET | `/api/org/storage` | ストレージ使用量 |
@@ -122,6 +129,19 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 - `seeded_repo_slugs` からも除去(空ツリー扱いの対象から外す)
 - 成功時 `204 No Content`、存在しなければ `404 Not Found`
 - 監査ログに `"deleted repository"` を記録
+
+### 3.3 VCS書き込みAPI(ステージ・コミット・ブランチ)
+
+`tree`/`commits`/`branches` は元々全リポジトリで共有される単一のグローバルデータだったが、書き込み操作を導入するにあたりリポジトリごとの `HashMap<slug, Vec<T>>` へリファクタリングした(GETレスポンスの形状は変更なし、単なる内部ストレージの変更)。
+
+- `POST /api/repositories/{slug}/tree/stage` — body: `{ "path": "...", "changeType": "added"|"modified"|"deleted", "staged": true|false }`。`toggle_lock` と同じパターンでパスごとの保留変更を追加/削除。
+- `POST /api/repositories/{slug}/commits` — body: `{ "message": "...", "description": "" }`。保留変更が空なら `400`。`rand` crateで40文字の16進フェイクハッシュを生成し、`Commit` を該当ブランチの末尾に追加、ブランチの `head` を更新、保留変更をクリア。
+- `POST /api/repositories/{slug}/branches` — body: `{ "name": "...", "from": "main" }`。`from` 省略時は現在のブランチ。既存名なら `400`。
+- `POST /api/repositories/{slug}/checkout` — body: `{ "branch": "..." }`。`current_branch` (repo slug単位のHashMap) を更新。
+
+### 3.4 PUT /api/access-control/entries の仕様
+
+body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換ではなくパスごとのマージ**(insert-or-overwrite) — リクエストボディに含まれないパスの既存データは一切変更しない。監査ログに `"applied access control configuration from Server Admin"` を1エントリ記録。Server Adminのノードエディタからのapplyで使用。
 
 ## 4. 認証・セッションの実装詳細
 
@@ -148,10 +168,19 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | QMLバインディングループでプロパティが `undefined` | 内側の `id` と外側のプロパティ名が衝突 | idをリネーム(例: `repositoryModel` → `repositoryModelInstance`) |
 | `QStringLiteral(定数)` がコンパイルエラー | マクロはリテラルトークンが必要、`const char*` 不可 | `QLatin1String` に置き換え |
 | スクリーンショットが無関係なウィンドウを写す | `CopyFromScreen` が古い座標をキャッシュ | 撮影直前に `GetWindowRect` を再取得 + `SetForegroundWindow` |
+| `QProcess::stop()` 相当のはずが `errorOccurred(Crashed)` を発火 | `terminate()` はウィンドウを持たないプロセスへは無効(`WM_CLOSE`相当が届かない)、3秒後の `kill()` フォールバックが実質毎回発動 | `errorOccurred` ハンドラで `FailedToStart` 以外は致命扱いしない。`Stopped` 経路で `lastError` をクリア |
+| Qt標準 `TabBar`/`TabButton` がダークテーマに追従しない | アクティブスタイルが `background:` オーバーライドを無視(コンソールに "style does not support customization" 警告) | 手組みのPill型タブ(`Rectangle` + `Text` + `MouseArea`、Theme色を直接バインド)に置き換え |
+| 認証付き画像がQMLの `Image` で読み込めない(401) | `Image { source: }` はデフォルトのQNetworkAccessManagerを使い、Cookie jarを共有しない | `QQuickAsyncImageProvider` を実装し、共有 `ApiClient::networkManager()` 経由でフェッチ、`image://<provider>/...` で公開 |
+| `QQuickAsyncImageProvider::requestImageResponse()` からのネットワークアクセスがスレッド違反でクラッシュ/無反応 | ワーカースレッドで呼ばれるが `QNetworkAccessManager` はGUIスレッド専属 | レスポンスオブジェクトを `moveToThread()` でGUIスレッドへ移し、`QMetaObject::invokeMethod(..., Qt::QueuedConnection)` 経由で `start()` を呼ぶ |
+| 検証用QMLの `console.log`/`console.error` がリダイレクトログに出ない | リダイレクト先がファイルだとフルバッファリングになり、プロセス終了までフラッシュされない | C++側に `Q_INVOKABLE` なロガーを用意し `fprintf(stderr, ...)` + `fflush(stderr)` で出力(QML側は `logger.log(...)` を呼ぶだけ) |
+| 複雑な画面遷移(ログイン→一覧→詳細)を伴う検証用Timerチェーンが理由不明で無反応 | 原因未特定(QMLの id 解決タイミング等の可能性) | デバッグに沈まず、検証したいC++型だけを直接インスタンス化する専用の一時QMLファイルに切り替える(`main.cpp` の `loadFromModule` を一時的に差し替え) |
+| `vcvarsall.bat` が見つからないと突然失敗する | 開発環境のVisual Studioインストールが `...\2022\Community\...` から `...\18\Community\...` へ自動更新されていた(セッション中に発生) | ハードコードせず `find "C:\Program Files\Microsoft Visual Studio" -iname vcvarsall.bat` 等で都度確認 |
 
 ## 7. 既知の制約 / 今後の課題
 
-- LoreForge Clientは現状「閲覧+ロック操作」まで。コミット/ブランチ切替/プッシュ・プルなどの実操作は未実装。
-- LoreForge Server AdminのDocker制御(`DockerController`)は雛形段階。MinIO/Lore Serverコンテナの実起動・監視は未接続。
+- LoreForge ClientのVCS操作はlorehub-apiへの直接書き込みで完結しており、`push`と`commit`の区別がない(ローカル/リモートの分離が存在しないため — 詳細はARCHITECTURE_AND_DESIGN.md §3.2)。
+- LoreForge Server AdminのMinIO Docker制御(`DockerController`)はコード実装済みだが、この開発環境にDockerが無いため実機検証ができていない。
+- LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。
+- Server Adminのノードエディタはディレクトリ/ロールの追加・削除UIが無く、既定の5+3ノード構成が前提。
 - 認証は単一セッショントークン方式で、リフレッシュトークンやトークン失効APIは未実装。
 - `kv_store` 方式は将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。

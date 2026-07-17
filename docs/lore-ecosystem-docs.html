@@ -430,6 +430,7 @@
     <a href="#tokens">デザイントークン</a>
     <a href="#timeline">開発の歩み</a>
     <a href="#agents">並行エージェント開発</a>
+    <a href="#verification">独立再検証</a>
     <a href="#status">現在の状態</a>
   </nav>
 
@@ -498,16 +499,24 @@
             </div>
 
             <div class="arch-row">
-              <div class="arch-arrow">QProcess (Docker制御・実装中)</div>
+              <div class="arch-arrow">QProcess: docker run/stop/stats・lorehub-api.exe 起動/停止/PID監視</div>
+            </div>
+            <div class="arch-box" style="grid-column: 2 / 3;">
+              <div class="k">Local process</div>
+              <div class="name">lorehub-api.exe</div>
+              <div class="stack">実プロセス制御(起動/停止/PID/メモリ)</div>
             </div>
             <div class="arch-box" style="grid-column: 3 / 4;">
               <div class="k">Infra</div>
               <div class="name">Docker</div>
-              <div class="stack">MinIO + Lore Server</div>
+              <div class="stack">MinIO(コード実装済み・実機未検証)</div>
             </div>
           </div>
         </div>
       </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        Server Adminはログイン後 <code>PUT /api/access-control/entries</code> でノードエディタの権限グラフを実サーバーへApply(パスごとのマージ、対象外パスは無傷)。
+      </p>
     </section>
 
     <section id="components">
@@ -530,22 +539,23 @@
           <h3>LoreForge Client</h3>
           <div class="role">Qt6 / QML / C++20</div>
           <ul>
-            <li>ログイン(セッションCookie)</li>
-            <li>リポジトリ一覧(実データ取得)</li>
+            <li>ログイン(セッションCookie)・リポジトリ一覧・グローバル検索</li>
             <li>ファイルツリー + ロック/アンロック</li>
-            <li>グローバル検索</li>
-            <li>コミット履歴ビュー <span class="badge progress">進行中</span></li>
-            <li>今後: コミット/ブランチ/push・pull</li>
+            <li>コミット履歴ビュー(ブランチ別カラー)</li>
+            <li>Fork並みの実操作 — ステージング/コミット/ブランチ作成・切替/Pull <span class="badge done">完了</span></li>
+            <li>バイナリDiffビューア — 画像スライダー/3Dモデルトグル <span class="badge done">完了</span></li>
+            <li>Sparse Workspace Manager <span class="badge done">完了</span></li>
           </ul>
         </div>
         <div class="card comp-card">
           <h3>LoreForge Server Admin</h3>
           <div class="role">Qt6 / QML / C++20</div>
           <ul>
-            <li>環境ステータスパネル</li>
-            <li>ノードエディタ風の権限設定UI</li>
-            <li>権限設定の永続化(JSON) <span class="badge done">完了</span></li>
-            <li>今後: Docker実接続(MinIO/Lore Server起動)</li>
+            <li>環境ステータスパネル・タブ視認性修正済み</li>
+            <li>Lore Server実プロセス制御(起動/停止/PID/メモリ) <span class="badge done">完了</span></li>
+            <li>MinIO Docker制御(実装済み・実機未検証) <span class="badge progress">要実機検証</span></li>
+            <li>ノードエディタ風の権限設定UI + ローカル永続化</li>
+            <li>権限グラフの実サーバーApply <span class="badge done">完了</span></li>
           </ul>
         </div>
       </div>
@@ -651,10 +661,15 @@
             <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(関連PRも削除)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/lock</td><td>ファイルロック切替</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/stage</td><td>変更をステージ/アンステージ</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/commits</td><td>ステージ済み変更からコミット作成</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/branches</td><td>ブランチ作成</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/checkout</td><td>ブランチ切替</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/pulls</td><td>PR一覧</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/pulls/{id}/comments</td><td>PRコメント追加</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/access-control/entries</td><td>権限一覧</td></tr>
+            <tr><td class="method">PUT</td><td class="path">/api/access-control/entries</td><td>権限グラフApply(パス単位マージ)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/org/audit-log</td><td>監査ログ</td></tr>
           </tbody>
         </table>
@@ -712,10 +727,15 @@
             <div class="t">デスクトップ着手</div>
             <ul><li>Client雛形+ログイン</li><li>ツリー+ロック操作</li><li>Server Admin雛形</li></ul>
           </div>
-          <div class="phase current">
+          <div class="phase">
             <div class="n">Phase 6</div>
-            <div class="t">機能拡張(現在)</div>
+            <div class="t">GitHubレベル機能拡張</div>
             <ul><li>リポジトリ設定</li><li>Client コミット履歴</li><li>Server Admin 権限永続化</li></ul>
+          </div>
+          <div class="phase current">
+            <div class="n">Phase 7</div>
+            <div class="t">アーキテクチャギャップの解消(現在)</div>
+            <ul><li>Client Fork並み実操作</li><li>Server Admin実プロセス制御</li><li>権限グラフApply連携</li><li>バイナリDiffビューア</li><li>Sparse Workspace</li></ul>
           </div>
         </div>
       </div>
@@ -749,16 +769,49 @@
       </p>
     </section>
 
+    <section id="verification">
+      <div class="eyebrow">11 / Trust</div>
+      <h2>独立再検証パターン</h2>
+      <p class="lede">Phase 7ではサブエージェントの完了報告を鵜呑みにせず、オーケストレーターが毎回ゼロから独立して再現するルールを徹底した。</p>
+      <div class="card">
+        <div class="flow">
+          <div class="flow-step">
+            <div class="who">Step 1</div>
+            <div class="what"><code>build/</code> を完全削除してクリーンビルド</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 2</div>
+            <div class="what">報告内容を見ずに、報告された動作を自分の手で再現</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 3</div>
+            <div class="what">一次証拠を取得</div>
+            <div class="note">実プロセスのPID・tasklist出力・HTTPレスポンスの実バイト数・Windowsレジストリの値そのもの</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 4</div>
+            <div class="what"><code>TEMP-VERIFY</code> タグの検証用コードが完全除去されているか grep で確認</div>
+          </div>
+        </div>
+      </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        この過程で、報告だけでは分からない<strong>環境ドリフト</strong>(Visual Studioのインストールパスがセッション中に <code>2022</code> フォルダから <code>18</code> フォルダへ自動更新されていた)や、<strong>検証手法自体の欠陥</strong>(QMLの <code>console.log</code> がリダイレクトログへ確実にフラッシュされない、複雑な画面遷移よりC++側の単機能を直接検証する専用QMLの方が確実)を発見した。
+      </p>
+    </section>
+
     <section id="status">
-      <div class="eyebrow">11 / Now</div>
+      <div class="eyebrow">12 / Now</div>
       <h2>現在の状態</h2>
       <div class="status-list">
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・リポジトリCRUD</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — 権限設定(アクセス制御グラフ)の永続化</span></div>
-        <div class="status-row"><span class="badge progress">進行中</span><span class="txt">LoreForge Client — コミット履歴ビュー</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — Fork並みの実操作(コミット / ブランチ / push・pull)</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Server Admin — Docker実接続(MinIO / Lore Server起動)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・VCS書き込みAPI・access-control Apply</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Fork並み実操作(コミット/ブランチ/ステージング)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア(画像スライダー/3Dトグル)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正</span></div>
+        <div class="status-row"><span class="badge progress">要実機検証</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(コード実装済み、この開発環境にDocker無し)</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — 実バイナリアセットのアップロード/差分生成</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">Server Admin — ノードエディタでのディレクトリ/ロール追加・削除UI</span></div>
       </div>
     </section>
 
