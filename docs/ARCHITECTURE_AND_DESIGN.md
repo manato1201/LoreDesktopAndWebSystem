@@ -34,15 +34,18 @@ graph TB
     end
 
     SQLite[("SQLite<br/>lorehub.db")]
-    Docker[("Docker<br/>MinIO + Lore Server<br/>(Server Adminが制御)")]
+    Docker[("Docker<br/>MinIO<br/>(Server Adminが制御)")]
+    ServerProc(["lorehub-api.exe<br/>ローカルプロセス"])
 
     WebUI -- "fetch, credentials: include<br/>Cookie(session)" --> Handlers
     Client -- "QNetworkAccessManager<br/>Cookie jar" --> Handlers
     Handlers -- "read/write" --> AppState
     AppState -- "save_blob / load_state" --> DB
     DB --> SQLite
-    ServerAdmin -- "QProcess" --> Docker
-    ServerAdmin -. "将来: lore CLI経由で<br/>Lore Serverと通信" .-> Backend
+    ServerAdmin -- "docker run/stop/stats<br/>(QProcess)" --> Docker
+    ServerAdmin -- "QProcess 起動/停止<br/>PID・メモリ監視" --> ServerProc
+    ServerAdmin -- "PUT /api/access-control/entries<br/>(ログイン後)" --> Handlers
+    ServerProc -.->|"実体"| Backend
 
     style WebUI fill:#1ed760,color:#121212
     style Client fill:#1ed760,color:#121212
@@ -52,7 +55,7 @@ graph TB
     style DB fill:#181818,color:#fff,stroke:#4d4d4d
 ```
 
-**現状の実装範囲の注記**: `ServerAdmin → Docker` および `ServerAdmin -.-> Backend` は設計上の接続で、実装は段階的に進行中(後述の開発状況を参照)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
+**現状の実装範囲の注記**: `ServerAdmin → ServerProc`(実プロセス起動/停止/PID・メモリ監視)と `ServerAdmin → Handlers`(権限グラフのApply)はどちらも実データで動作する実装。`ServerAdmin → Docker` のMinIO制御も実際の `docker` CLIを呼び出す実装だが、この開発環境にDockerが未インストールのため実機検証はできていない(コードレビューベース)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
 
 ## 3. コンポーネント詳細
 
@@ -67,15 +70,26 @@ graph TB
 
 - **UI**: Qt6 / QML、`QML_ELEMENT` マクロでC++型をQMLに公開
 - **ロジック**: C++20、`QNetworkAccessManager` + Cookie jarでlorehub-apiと直接通信(Web版と同一バックエンドを共有)
-- **実装済み**: ログイン画面、リポジトリ一覧(実データ取得)、ファイルツリー閲覧+ロック/アンロック操作、グローバル検索、コミット履歴表示(進行中)
-- **今後**: Fork並みの実操作(コミット、ブランチ切替、プッシュ/プル)への拡張
+- **実装済み**:
+  - ログイン画面、リポジトリ一覧(実データ取得)
+  - ファイルツリー閲覧 + ロック/アンロック操作、グローバル検索
+  - コミット履歴ビュー(ブランチ別カラーリング、マージコミット表示)
+  - **Fork並みの実操作**: ファイルのステージング(Added/Modified/Deleted)、コミット作成、ブランチ作成/切替、Pull(明示的な再フェッチ)
+  - **バイナリDiffビューア**: 画像Before/Afterスライダー(`LoreImageProvider` による認証付き非同期画像取得)、3Dモデルの視覚的Diffトグル(スタイライズされたワイヤーフレーム代替表現)
+  - **Sparse Workspace Manager**: ディレクトリ単位でワークスペースに含める/含めないを選択、`QSettings` でリポジトリごとに永続化。除外時は配下の選択も連鎖的に解除
+- **今後**: 実バイナリアセットのアップロード/差分生成(現状はサーバー側デモデータを参照)
 
 ### 3.3 LoreForge Server Admin (Desktop)
 
 - **UI**: Qt6 / QML、ノードエディタ風の権限設定UI
-- **ロジック**: C++20、`QProcess` によるDocker制御(`DockerController`)
-- **実装済み**: 環境ステータスパネル、ディレクトリ×ロールのノードエディタUI、権限設定の永続化(進行中)
-- **今後**: MinIO/Lore Serverコンテナのワンクリック起動・停止・監視の実データ接続
+- **ロジック**: C++20、`QProcess` によるDocker制御(`DockerController`)とローカルプロセス制御(`LoreServerController`)
+- **実装済み**:
+  - 環境ステータスパネル(MinIO/Lore Serverの2カード)
+  - **Lore Server実制御**: `lorehub-api.exe` をローカルプロセスとして起動/停止、PID・メモリ使用量(`tasklist` 経由)を監視。アプリ終了時も子プロセスを確実に回収(orphan防止)
+  - MinIODocker制御(`docker run`/`stop`/`ps`/`stats`、CPU/RAM表示)— コード実装済みだがこの開発環境にDocker未インストールのため実機未検証
+  - ディレクトリ×ロールのノードエディタUI、権限設定のローカル永続化(JSON)
+  - **権限グラフのApply**: ログインしてlorehub-apiへ `PUT /api/access-control/entries` を送信し、ノードエディタの権限グラフを実サーバーへ反映(パスごとのマージ、対象外パスは無傷)
+- **今後**: ノードエディタでのディレクトリ/ロール追加・削除UI(現状は既定の5+3ノード構成が前提)
 
 ## 4. データフロー: 認証シーケンス
 
@@ -103,6 +117,26 @@ sequenceDiagram
 ```
 
 **設計判断**: 当初は「書き込み系のみ認証必須」だったが、GETの素通し(読み取りが誰でも可能)を自己発見しギャップとして塞ぎ、全エンドポイントを `require_auth` ミドルウェア配下に統一した。
+
+### 4.1 権限グラフのApply(Server Admin → lorehub-api)
+
+Server Adminのノードエディタで組んだ権限グラフは、当初はローカルJSONファイルに保存するだけで実サーバーと無関係だった。以下のフローで実際にlorehub-apiへ反映されるようになっている。
+
+```mermaid
+sequenceDiagram
+    participant Admin as Server Admin
+    participant API as lorehub-api
+
+    Admin->>API: POST /api/auth/login (email/password)
+    API-->>Admin: Set-Cookie: lorehub_token
+    Admin->>Admin: ノードエディタでdirectories×rolesのグラフを構築
+    Admin->>API: PUT /api/access-control/entries<br/>{ "Assets/Characters": [{principal, permissions}] }
+    API->>API: パスごとにマージ(insert-or-overwrite)<br/>グラフに無いパスは無傷のまま
+    API-->>Admin: 更新後の access_entries 全体を返す
+    Note over API: audit_logに "applied access control<br/>configuration from Server Admin" を記録
+```
+
+**設計判断**: `PUT` は全置換ではなく「グラフに含まれるパスだけを上書きし、それ以外は触らない」マージ方式。Server Adminの既定グラフ(5ディレクトリ)がlorehub-apiのデモ全パスを網羅していないため、全置換だと未対応パスのデモデータが消えてしまう。
 
 ## 5. データモデル (AppState)
 
@@ -188,6 +222,7 @@ timeline
     Phase 4 認証と永続化 : セッションベース認証(argon2) : 全GET読み取りをゲート : SQLiteへ永続化
     Phase 5 デスクトップアプリ着手 : LoreForge Client雛形+ログイン : ファイルツリー+ロック操作 : Server Admin雛形+権限ノードエディタ
     Phase 6 GitHubレベル機能拡張 : リポジトリ設定(rename/削除) : Client コミット履歴表示(並行作業) : Server Admin 権限設定永続化(並行作業)
+    Phase 7 アーキテクチャギャップの解消 : Client Fork並み実操作(commit/branch/stage) : Server Admin実プロセス制御(Lore Server) : タブ視認性修正 : 権限グラフのApply連携 : Clientバイナリdiffビューア : Sparse Workspace Manager
 ```
 
 ## 9. マルチエージェント並行開発
@@ -206,10 +241,28 @@ graph LR
 
 各エージェントには同じ「クラッシュ調査手法」(`PrintWindow`によるスクリーンショット、`MSYS_NO_PATHCONV=1`、QML singleton診断法など)を事前共有し、独立して発見した問題の再発を防いだ。
 
+### 9.1 独立再検証パターン
+
+Phase 7では、サブエージェントの完了報告を鵜呑みにせず、オーケストレーター(メインセッション)が毎回ゼロから独立して再検証するパターンを徹底した。
+
+```mermaid
+flowchart TD
+    A["サブエージェント完了報告"] --> B["build/ を完全削除して<br/>クリーンビルド"]
+    B --> C{"ビルド成功?"}
+    C -->|No| D["環境要因を切り分け<br/>(例: VSインストールパス変更)"]
+    C -->|Yes| E["報告された動作を<br/>自分の手で再現"]
+    E --> F["実プロセス/実HTTP応答/<br/>レジストリなど一次証拠で確認"]
+    F --> G["TEMP-VERIFY残留ゼロを<br/>grepで確認"]
+    G --> H["git diffが報告と一致するか確認"]
+    H --> I["push"]
+```
+
+この過程で、報告だけでは分からない実環境の変化(Visual Studioのインストールパスが `2022` フォルダから `18` フォルダへ自動更新されていた事実)や、検証手法そのものの欠陥(QMLの `console.log` がリダイレクトされたログファイルへ確実にフラッシュされない問題、複雑な画面遷移を伴うTimerチェーンより単機能の検証用QMLを直接ロードする方が確実、という教訓)を発見した。**「動きました」という報告と、実際に動くことは別物**という前提に立ち、毎回一次証拠(実プロセスのPID、実HTTPレスポンス、レジストリの値そのもの)を自分で取得することを徹底した。
+
 ## 10. 現在の状態(このドキュメント作成時点)
 
 - ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)まで完了、lint/build検証済み
-- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備
-- 🔄 LoreForge Client: コミット履歴ビューを実装中(バックグラウンドエージェント)
-- 🔄 LoreForge Server Admin: 権限設定(アクセス制御グラフ)の永続化を実装中(バックグラウンドエージェント)
-- ⏳ 未着手: LoreForge ClientでのFork並み実操作(コミット/ブランチ/プッシュ)、Server AdminでのDocker実接続(MinIO/Lore Server起動)
+- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応
+- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア、Sparse Workspace Managerまで完備
+- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、タブ視認性修正まで完備。MinIOのDocker制御はコード実装済みだが実機(Docker)未検証
+- ⏳ 未着手: LoreForge Clientでの実バイナリアセットアップロード/差分生成、Server Adminのノードエディタでのディレクトリ/ロール追加・削除UI、MinIO Docker制御の実機検証
