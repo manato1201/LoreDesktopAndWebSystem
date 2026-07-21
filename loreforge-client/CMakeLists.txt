@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2 Network Svg)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -59,6 +59,7 @@ target_link_libraries(LoreForgeClient
         Qt6::Qml
         Qt6::Quick
         Qt6::QuickControls2
+        Qt6::QuickDialogs2
         Qt6::Network
         Qt6::Svg
 )

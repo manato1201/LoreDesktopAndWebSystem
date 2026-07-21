@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import LoreForge
 
 Item {
@@ -912,6 +913,143 @@ Item {
                             workspace.treeModel.toggleLock(workspace.selectedFile.path, willLock)
                         }
                     }
+                }
+            }
+        }
+
+        // --- Add File (Binary Diff Viewer write path) ---
+        // Lets the user pick a real local image file and upload it via
+        // RepositoryTreeModel::uploadFile(), which POSTs the bytes to
+        // lorehub-api and auto-stages the target path as an "added" change.
+        // Scoped to images only (png/jpg/jpeg/gif/webp/svg) — this feature
+        // intentionally does not extend to text/audio/model3d files.
+        Rectangle {
+            id: uploadPanel
+            Layout.fillWidth: true
+            visible: workspace.activeTab === "files"
+            implicitHeight: uploadPanelColumn.implicitHeight + Theme.spacingUnit * 2
+            color: Theme.colorSurface
+            radius: Theme.radiusComfortable
+
+            property url pickedFileUrl: ""
+            property string pickedFileName: ""
+            property string lastSucceededPath: ""
+
+            Connections {
+                target: workspace.treeModel
+                function onUploadSucceeded(path) {
+                    uploadPanel.lastSucceededPath = path
+                    uploadPanel.pickedFileUrl = ""
+                    uploadPanel.pickedFileName = ""
+                    uploadTargetField.text = ""
+                }
+            }
+
+            FileDialog {
+                id: uploadFileDialog
+                title: "Choose an image to upload"
+                nameFilters: ["Images (*.png *.jpg *.jpeg *.gif *.webp *.svg)"]
+                onAccepted: {
+                    uploadPanel.pickedFileUrl = selectedFile
+                    uploadPanel.pickedFileName = selectedFile.toString().split("/").pop()
+                    uploadPanel.lastSucceededPath = ""
+                    uploadTargetField.text = "Assets/" + uploadPanel.pickedFileName
+                }
+            }
+
+            ColumnLayout {
+                id: uploadPanelColumn
+                anchors.fill: parent
+                anchors.margins: Theme.spacingUnit * 2
+                spacing: Theme.spacingUnit
+
+                Text {
+                    text: "Add File"
+                    color: Theme.colorTextPrimary
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingUnit
+
+                    Rectangle {
+                        implicitWidth: chooseLabel.implicitWidth + Theme.spacingUnit * 3
+                        implicitHeight: 32
+                        radius: Theme.radiusStandard
+                        color: Theme.colorSurfaceInteractive
+
+                        Text {
+                            id: chooseLabel
+                            anchors.centerIn: parent
+                            text: uploadPanel.pickedFileName.length > 0 ? uploadPanel.pickedFileName : "Choose Image…"
+                            color: Theme.colorTextPrimary
+                            font.pixelSize: Theme.fontSizeCaption
+                            elide: Text.ElideMiddle
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: uploadFileDialog.open()
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 36
+                        radius: Theme.radiusStandard
+                        color: Theme.colorSurfaceInteractive
+                        border.width: uploadTargetField.activeFocus ? 1 : 0
+                        border.color: Theme.colorAccent
+
+                        TextInput {
+                            id: uploadTargetField
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingUnit
+                            verticalAlignment: TextInput.AlignVCenter
+                            color: Theme.colorTextPrimary
+                            font.pixelSize: Theme.fontSizeCaption
+                            selectByMouse: true
+                        }
+
+                        Text {
+                            visible: uploadTargetField.text.length === 0 && !uploadTargetField.activeFocus
+                            anchors.left: parent.left
+                            anchors.leftMargin: Theme.spacingUnit
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Target path (e.g. Assets/new_texture.png)"
+                            color: Theme.colorTextSecondary
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                    }
+
+                    PrimaryButton {
+                        text: "Upload & Stage"
+                        busy: workspace.treeModel && workspace.treeModel.uploadBusy
+                        enabled: workspace.treeModel && !workspace.treeModel.uploadBusy
+                            && uploadPanel.pickedFileUrl.toString().length > 0
+                            && uploadTargetField.text.trim().length > 0
+                        onClicked: {
+                            if (workspace.treeModel)
+                                workspace.treeModel.uploadFile(uploadPanel.pickedFileUrl, uploadTargetField.text.trim())
+                        }
+                    }
+                }
+
+                Text {
+                    visible: workspace.treeModel && workspace.treeModel.uploadError.length > 0
+                    text: workspace.treeModel ? workspace.treeModel.uploadError : ""
+                    color: Theme.colorNegative
+                    font.pixelSize: Theme.fontSizeSmall
+                }
+
+                Text {
+                    visible: uploadPanel.lastSucceededPath.length > 0
+                    text: "Uploaded and staged: " + uploadPanel.lastSucceededPath
+                    color: Theme.colorAccent
+                    font.pixelSize: Theme.fontSizeSmall
                 }
             }
         }

@@ -1,6 +1,7 @@
 #include "RepositoryTreeModel.h"
 #include "ApiClient.h"
 
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -267,6 +268,65 @@ void RepositoryTreeModel::unstageChange(const QString &path)
     });
 }
 
+void RepositoryTreeModel::uploadFile(const QUrl &localFileUrl, const QString &targetPath)
+{
+    if (m_slug.isEmpty())
+        return;
+
+    const QString path = targetPath.trimmed();
+    if (path.isEmpty()) {
+        setUploadError(QStringLiteral("target path is required"));
+        return;
+    }
+
+    QFile file(localFileUrl.toLocalFile());
+    if (!file.open(QIODevice::ReadOnly)) {
+        setUploadError(QStringLiteral("could not open file: ") + localFileUrl.toLocalFile());
+        return;
+    }
+    const QByteArray bytes = file.readAll();
+    file.close();
+    if (bytes.isEmpty()) {
+        setUploadError(QStringLiteral("selected file is empty"));
+        return;
+    }
+
+    setUploadError(QString());
+    setUploadBusy(true);
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/upload"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonObject body;
+    body["path"] = path;
+    body["contentBase64"] = QString::fromLatin1(bytes.toBase64());
+
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, path]() {
+        setUploadBusy(false);
+
+        if (reply->error() != QNetworkReply::NoError) {
+            setUploadError(reply->errorString());
+            reply->deleteLater();
+            return;
+        }
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (httpStatus != 201) {
+            setUploadError(QStringLiteral("upload failed (HTTP %1)").arg(httpStatus));
+            return;
+        }
+
+        emit uploadSucceeded(path);
+        // Reuse the existing staging write-path rather than duplicating the
+        // HTTP call: mark the freshly uploaded file as a staged "added"
+        // change. stageChange()'s own completion handler already refreshes
+        // m_pendingChanges/pendingCount via applyPendingJson().
+        stageChange(path, QStringLiteral("added"));
+    });
+}
+
 void RepositoryTreeModel::fetchPending()
 {
     if (m_slug.isEmpty())
@@ -482,4 +542,20 @@ void RepositoryTreeModel::setErrorMessage(const QString &message)
         return;
     m_errorMessage = message;
     emit errorMessageChanged();
+}
+
+void RepositoryTreeModel::setUploadBusy(bool busy)
+{
+    if (m_uploadBusy == busy)
+        return;
+    m_uploadBusy = busy;
+    emit uploadBusyChanged();
+}
+
+void RepositoryTreeModel::setUploadError(const QString &message)
+{
+    if (m_uploadError == message)
+        return;
+    m_uploadError = message;
+    emit uploadErrorChanged();
 }

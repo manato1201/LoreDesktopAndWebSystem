@@ -84,6 +84,10 @@ async fn main() {
             get(handlers::get_image_before),
         )
         .route(
+            "/api/repositories/{slug}/upload",
+            post(handlers::upload_image),
+        )
+        .route(
             "/api/repositories/{slug}/audio/{*path}",
             get(handlers::get_audio),
         )
