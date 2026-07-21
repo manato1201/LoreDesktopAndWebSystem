@@ -22,6 +22,14 @@ Rectangle {
     property string saveFeedback: ""
     property color saveFeedbackColor: Theme.colorTextSecondary
 
+    property bool addDirectoryOpen: false
+    property bool addRoleOpen: false
+    property int idCounter: 0
+
+    property bool chipReadOn: true
+    property bool chipWriteOn: false
+    property bool chipLockOn: false
+
     PermissionConfigController {
         id: permissionConfig
     }
@@ -61,6 +69,113 @@ Rectangle {
     function clearConnections() {
         connections = []
         lineCanvas.requestPaint()
+    }
+
+    // Guaranteed not to collide with any existing node id (default or
+    // previously added): monotonically increasing counter plus a timestamp.
+    function generateNodeId(prefix) {
+        panel.idCounter += 1
+        return prefix + "_" + Date.now() + "_" + panel.idCounter
+    }
+
+    // Reassigning directoryModel/roleModel (a plain JS array) to a new
+    // array reference makes the Repeater tear down and recreate every
+    // delegate, which would snap any node the user had live-dragged but
+    // not yet saved back to its stale modelData x/y. Pull the current
+    // on-screen position out of nodeRegistry for every surviving node
+    // first so add/remove operations don't silently discard drag state.
+    function syncModelPositions(model) {
+        return model.map(function (entry) {
+            const item = panel.nodeRegistry[entry.id]
+            if (!item)
+                return entry
+            const synced = Object.assign({}, entry)
+            synced.x = item.x
+            synced.y = item.y
+            return synced
+        })
+    }
+
+    // Extends the same vertical-stacking pattern the default nodes use
+    // (76px steps for directories, 100px steps for roles) below whatever
+    // is actually in the model right now, rather than assuming a fixed
+    // default count.
+    function nextStackY(model, startY, step) {
+        if (model.length === 0)
+            return startY
+        var maxY = startY - step
+        for (var i = 0; i < model.length; i++) {
+            if (model[i].y > maxY)
+                maxY = model[i].y
+        }
+        return maxY + step
+    }
+
+    function addDirectory(path) {
+        const trimmed = path.trim()
+        if (trimmed.length === 0)
+            return
+        const synced = panel.syncModelPositions(panel.directoryModel)
+        const newY = panel.nextStackY(synced, 24, 76)
+        const node = { id: panel.generateNodeId("dir"), path: trimmed, x: 32, y: newY }
+        panel.directoryModel = synced.concat([node])
+        lineCanvas.requestPaint()
+    }
+
+    function addRole(principal, permissionLabel) {
+        const trimmed = principal.trim()
+        if (trimmed.length === 0 || permissionLabel.length === 0)
+            return
+        const synced = panel.syncModelPositions(panel.roleModel)
+        const newY = panel.nextStackY(synced, 40, 100)
+        const node = { id: panel.generateNodeId("role"), principal: trimmed, permissionLabel: permissionLabel, y: newY }
+        panel.roleModel = synced.concat([node])
+        lineCanvas.requestPaint()
+    }
+
+    function removeNode(nodeId) {
+        const kind = panel.nodeTypes[nodeId]
+        if (kind === "directory") {
+            panel.directoryModel = panel.syncModelPositions(panel.directoryModel)
+                .filter(function (entry) { return entry.id !== nodeId })
+        } else if (kind === "role") {
+            panel.roleModel = panel.syncModelPositions(panel.roleModel)
+                .filter(function (entry) { return entry.id !== nodeId })
+        }
+
+        panel.connections = panel.connections.filter(function (c) {
+            return c.from !== nodeId && c.to !== nodeId
+        })
+
+        delete panel.nodeRegistry[nodeId]
+        delete panel.nodeTypes[nodeId]
+        if (panel.pendingFrom === nodeId)
+            panel.pendingFrom = ""
+
+        lineCanvas.requestPaint()
+    }
+
+    function confirmAddDirectory() {
+        panel.addDirectory(newDirectoryField.text)
+        newDirectoryField.text = ""
+        panel.addDirectoryOpen = false
+    }
+
+    function confirmAddRole() {
+        const parts = []
+        if (panel.chipReadOn)
+            parts.push("Read")
+        if (panel.chipWriteOn)
+            parts.push("Write")
+        if (panel.chipLockOn)
+            parts.push("Lock")
+
+        panel.addRole(newRoleField.text, parts.join(" / "))
+        newRoleField.text = ""
+        panel.chipReadOn = true
+        panel.chipWriteOn = false
+        panel.chipLockOn = false
+        panel.addRoleOpen = false
     }
 
     function defaultDirectoryModel() {
@@ -150,6 +265,50 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             Button {
+                text: "+ Directory"
+                onClicked: {
+                    panel.addRoleOpen = false
+                    panel.addDirectoryOpen = !panel.addDirectoryOpen
+                }
+
+                background: Rectangle {
+                    radius: Theme.radiusStandard
+                    color: "transparent"
+                    border.color: Theme.colorBorderLight
+                    border.width: 1
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: Theme.colorTextPrimary
+                    font.pixelSize: Theme.fontSizeButton
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            Button {
+                text: "+ Role"
+                onClicked: {
+                    panel.addDirectoryOpen = false
+                    panel.addRoleOpen = !panel.addRoleOpen
+                }
+
+                background: Rectangle {
+                    radius: Theme.radiusStandard
+                    color: "transparent"
+                    border.color: Theme.colorBorderLight
+                    border.width: 1
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: Theme.colorTextPrimary
+                    font.pixelSize: Theme.fontSizeButton
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            Button {
                 text: "Reset to defaults"
                 onClicked: panel.resetToDefaults()
 
@@ -202,6 +361,170 @@ Rectangle {
                     font.pixelSize: Theme.fontSizeButton
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: panel.addDirectoryOpen
+            spacing: Theme.spacingUnit
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 32
+                radius: Theme.radiusStandard
+                color: Theme.colorSurfaceInteractive
+                border.width: newDirectoryField.activeFocus ? 1 : 0
+                border.color: Theme.colorAccent
+
+                TextInput {
+                    id: newDirectoryField
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingUnit
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: Theme.colorTextPrimary
+                    font.pixelSize: Theme.fontSizeCaption
+                    selectByMouse: true
+                    Keys.onReturnPressed: panel.confirmAddDirectory()
+                }
+
+                Text {
+                    visible: newDirectoryField.text.length === 0 && !newDirectoryField.activeFocus
+                    anchors.left: parent.left
+                    anchors.leftMargin: Theme.spacingUnit
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Directory path…"
+                    color: Theme.colorTextSecondary
+                    font.pixelSize: Theme.fontSizeCaption
+                }
+            }
+
+            Button {
+                text: "Add"
+                enabled: newDirectoryField.text.trim().length > 0
+                onClicked: panel.confirmAddDirectory()
+
+                background: Rectangle {
+                    radius: Theme.radiusStandard
+                    opacity: parent.enabled ? 1.0 : 0.5
+                    color: parent.hovered ? Theme.colorAccentBorder : Theme.colorAccent
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: "#121212"
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeButton
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: panel.addRoleOpen
+            spacing: Theme.spacingUnit / 2
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingUnit
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 32
+                    radius: Theme.radiusStandard
+                    color: Theme.colorSurfaceInteractive
+                    border.width: newRoleField.activeFocus ? 1 : 0
+                    border.color: Theme.colorAccent
+
+                    TextInput {
+                        id: newRoleField
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingUnit
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: Theme.colorTextPrimary
+                        font.pixelSize: Theme.fontSizeCaption
+                        selectByMouse: true
+                        Keys.onReturnPressed: panel.confirmAddRole()
+                    }
+
+                    Text {
+                        visible: newRoleField.text.length === 0 && !newRoleField.activeFocus
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spacingUnit
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Principal name…"
+                        color: Theme.colorTextSecondary
+                        font.pixelSize: Theme.fontSizeCaption
+                    }
+                }
+
+                Row {
+                    spacing: Theme.spacingUnit / 2
+
+                    Repeater {
+                        model: [
+                            { label: "Read", key: "read" },
+                            { label: "Write", key: "write" },
+                            { label: "Lock", key: "lock" }
+                        ]
+
+                        Rectangle {
+                            property bool chipOn: modelData.key === "read" ? panel.chipReadOn
+                                                  : modelData.key === "write" ? panel.chipWriteOn
+                                                  : panel.chipLockOn
+
+                            implicitWidth: chipLabel.implicitWidth + Theme.spacingUnit * 2
+                            implicitHeight: 28
+                            radius: height / 2
+                            color: chipOn ? Theme.colorAccent : "transparent"
+                            border.width: 1
+                            border.color: chipOn ? Theme.colorAccent : Theme.colorBorderLight
+
+                            Text {
+                                id: chipLabel
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: chipOn ? "#121212" : Theme.colorTextPrimary
+                                font.pixelSize: Theme.fontSizeCaption
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (modelData.key === "read")
+                                        panel.chipReadOn = !panel.chipReadOn
+                                    else if (modelData.key === "write")
+                                        panel.chipWriteOn = !panel.chipWriteOn
+                                    else
+                                        panel.chipLockOn = !panel.chipLockOn
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    text: "Add"
+                    enabled: newRoleField.text.trim().length > 0
+                             && (panel.chipReadOn || panel.chipWriteOn || panel.chipLockOn)
+                    onClicked: panel.confirmAddRole()
+
+                    background: Rectangle {
+                        radius: Theme.radiusStandard
+                        opacity: parent.enabled ? 1.0 : 0.5
+                        color: parent.hovered ? Theme.colorAccentBorder : Theme.colorAccent
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#121212"
+                        font.bold: true
+                        font.pixelSize: Theme.fontSizeButton
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
             }
         }
@@ -398,6 +721,7 @@ Rectangle {
                     onDragged: lineCanvas.requestPaint()
                     onConnectRequested: (id) => panel.pendingFrom = id
                     onConnectReleased: (id, pos) => panel.tryConnect(id, pos)
+                    onRemoveRequested: (id) => panel.removeNode(id)
                     Component.onCompleted: {
                         panel.registerNode(nodeId, this, "directory")
                         lineCanvas.requestPaint()
@@ -415,6 +739,7 @@ Rectangle {
                     x: modelData.x !== undefined ? modelData.x : Math.max(232, canvasArea.width - 232)
                     y: modelData.y
                     onDragged: lineCanvas.requestPaint()
+                    onRemoveRequested: (id) => panel.removeNode(id)
                     Component.onCompleted: {
                         panel.registerNode(nodeId, this, "role")
                         lineCanvas.requestPaint()
