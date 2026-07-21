@@ -54,6 +54,13 @@ pub struct AppState {
     pub image_content: HashMap<String, String>,
     pub image_content_before: HashMap<String, String>,
     pub audio_content: HashMap<String, Vec<u8>>,
+    /// User-uploaded image bytes, keyed by repository slug and then by path
+    /// within that repository. Unlike `image_content`/`image_content_before`
+    /// (a pre-existing simplification for the fixed, read-only demo dataset —
+    /// see docs/TECHNICAL_REFERENCE.md), this is a *write* path: two
+    /// different repos uploading a file at the same relative path must not
+    /// collide, so this is per-repo-keyed from the start.
+    pub uploaded_images: HashMap<String, HashMap<String, Vec<u8>>>,
     /// Per-repository commit history (oldest first within each vec), keyed
     /// by repository slug.
     pub commits: HashMap<String, Vec<Commit>>,
@@ -746,6 +753,7 @@ pub fn seed() -> AppState {
         image_content,
         image_content_before,
         audio_content,
+        uploaded_images: HashMap::new(),
         commits,
         branches,
         current_branch: HashMap::new(),
