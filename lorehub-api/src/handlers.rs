@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::auth;
 use crate::models::*;
-use crate::state::SharedState;
+use crate::state::{SessionEntry, SharedState};
 
 fn not_found(message: &str) -> Response {
     (
@@ -37,17 +37,48 @@ fn bad_request(message: &str) -> Response {
 /// Resolves the session cookie to the authenticated `OrgMember` and inserts
 /// it into request extensions so downstream handlers can pull it out via
 /// `Extension<OrgMember>` instead of re-checking the session themselves.
+///
+/// An access token past its `expires_at` is treated identically to a
+/// missing/unknown token (401) — the client is expected to recover by
+/// calling `POST /api/auth/refresh` (see [`refresh`]), not by this
+/// middleware refreshing anything itself. When an expired entry is found it
+/// is also removed from `sessions` so the map doesn't grow unboundedly with
+/// dead tokens; this cleanup is a nice-to-have, not required for
+/// correctness (an expired entry is already rejected either way).
 pub async fn require_auth(
     State(ctx): State<SharedState>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let token = auth::extract_session_token(request.headers());
+    let now = auth::current_unix_time();
+
     let state_guard = ctx.read().await;
-    let email = token.and_then(|t| state_guard.sessions.get(&t).cloned());
+    let session = token
+        .as_ref()
+        .and_then(|t| state_guard.sessions.get(t).cloned());
+    drop(state_guard);
+
+    let email = match session {
+        Some(entry) if entry.expires_at > now => Some(entry.email),
+        Some(_expired) => {
+            if let Some(t) = &token {
+                let mut state_guard = ctx.write().await;
+                state_guard.sessions.remove(t);
+                let sessions = state_guard.sessions.clone();
+                drop(state_guard);
+                crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+            }
+            None
+        }
+        None => None,
+    };
+
     let Some(email) = email else {
         return unauthorized();
     };
+
+    let state_guard = ctx.read().await;
     let Some(user) = state_guard
         .org_members
         .iter()
@@ -86,34 +117,148 @@ pub async fn login(State(ctx): State<SharedState>, Json(body): Json<LoginRequest
         return unauthorized();
     };
 
-    let token = auth::generate_token();
-    state.sessions.insert(token.clone(), body.email);
+    let now = auth::current_unix_time();
+    let access_token = auth::generate_token();
+    let refresh_token = auth::generate_token();
+    state.sessions.insert(
+        access_token.clone(),
+        SessionEntry {
+            email: body.email.clone(),
+            expires_at: now + auth::ACCESS_TOKEN_TTL_SECS,
+        },
+    );
+    state.refresh_tokens.insert(
+        refresh_token.clone(),
+        SessionEntry {
+            email: body.email.clone(),
+            expires_at: now + auth::REFRESH_TOKEN_TTL_SECS,
+        },
+    );
     let sessions = state.sessions.clone();
+    let refresh_tokens = state.refresh_tokens.clone();
     drop(state);
     crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+    crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SET_COOKIE,
-        auth::session_cookie(&token).parse().unwrap(),
+        auth::session_cookie(&access_token).parse().unwrap(),
+    );
+    // `insert` would overwrite the header slot set above; `append` is what
+    // lets a response carry two independent `Set-Cookie` headers.
+    headers.append(
+        header::SET_COOKIE,
+        auth::refresh_cookie(&refresh_token).parse().unwrap(),
     );
 
     (headers, Json(serde_json::json!({ "user": user }))).into_response()
 }
 
+/// `POST /api/auth/refresh` — public (no valid access token required, since
+/// the whole point is recovering from an expired one). Reads the refresh
+/// cookie, and if it names a live (non-expired) entry in `refresh_tokens`,
+/// rotates it: the old refresh token is removed unconditionally (so a
+/// stolen/replayed copy of it becomes useless after one use, standard
+/// refresh-token-rotation practice) and a brand-new access token + refresh
+/// token pair is issued, persisted, and returned via `Set-Cookie`. Any other
+/// case (missing cookie, unknown token, expired token, or a user that no
+/// longer exists) is a 401.
+pub async fn refresh(State(ctx): State<SharedState>, headers: HeaderMap) -> Response {
+    let Some(refresh_token) = auth::extract_refresh_token(&headers) else {
+        return unauthorized();
+    };
+
+    let mut state = ctx.write().await;
+    let now = auth::current_unix_time();
+
+    // Remove unconditionally — even an expired or otherwise-rejected token
+    // must not be reusable afterwards.
+    let Some(entry) = state.refresh_tokens.remove(&refresh_token) else {
+        return unauthorized();
+    };
+
+    if entry.expires_at <= now {
+        let refresh_tokens = state.refresh_tokens.clone();
+        drop(state);
+        crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+        return unauthorized();
+    }
+
+    let Some(user) = state
+        .org_members
+        .iter()
+        .find(|m| m.email == entry.email)
+        .cloned()
+    else {
+        let refresh_tokens = state.refresh_tokens.clone();
+        drop(state);
+        crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+        return unauthorized();
+    };
+
+    let new_access = auth::generate_token();
+    let new_refresh = auth::generate_token();
+    state.sessions.insert(
+        new_access.clone(),
+        SessionEntry {
+            email: entry.email.clone(),
+            expires_at: now + auth::ACCESS_TOKEN_TTL_SECS,
+        },
+    );
+    state.refresh_tokens.insert(
+        new_refresh.clone(),
+        SessionEntry {
+            email: entry.email,
+            expires_at: now + auth::REFRESH_TOKEN_TTL_SECS,
+        },
+    );
+
+    let sessions = state.sessions.clone();
+    let refresh_tokens = state.refresh_tokens.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+    crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::SET_COOKIE,
+        auth::session_cookie(&new_access).parse().unwrap(),
+    );
+    response_headers.append(
+        header::SET_COOKIE,
+        auth::refresh_cookie(&new_refresh).parse().unwrap(),
+    );
+
+    (response_headers, Json(serde_json::json!({ "user": user }))).into_response()
+}
+
 pub async fn logout(State(ctx): State<SharedState>, headers: HeaderMap) -> Response {
-    if let Some(token) = auth::extract_session_token(&headers) {
+    let access_token = auth::extract_session_token(&headers);
+    let refresh_token = auth::extract_refresh_token(&headers);
+    if access_token.is_some() || refresh_token.is_some() {
         let mut state = ctx.write().await;
-        state.sessions.remove(&token);
+        if let Some(token) = &access_token {
+            state.sessions.remove(token);
+        }
+        if let Some(token) = &refresh_token {
+            state.refresh_tokens.remove(token);
+        }
         let sessions = state.sessions.clone();
+        let refresh_tokens = state.refresh_tokens.clone();
         drop(state);
         crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+        crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
     }
 
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::SET_COOKIE,
         auth::cleared_session_cookie().parse().unwrap(),
+    );
+    response_headers.append(
+        header::SET_COOKIE,
+        auth::cleared_refresh_cookie().parse().unwrap(),
     );
     (response_headers, StatusCode::NO_CONTENT).into_response()
 }
