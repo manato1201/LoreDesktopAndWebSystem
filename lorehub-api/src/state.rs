@@ -1,12 +1,23 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::auth;
 use crate::image_assets;
 use crate::models::*;
+
+/// A single session or refresh-token record: which user it belongs to, and
+/// when it stops being valid (unix seconds). Shared between `AppState::
+/// sessions` (access tokens) and `AppState::refresh_tokens` (refresh
+/// tokens) — the two maps differ only in TTL and which cookie feeds them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub email: String,
+    pub expires_at: i64,
+}
 
 pub type SharedState = Arc<AppContext>;
 
@@ -79,8 +90,14 @@ pub struct AppState {
     /// email -> argon2 password hash. Every demo account shares the same
     /// password ("lorehub") for convenience — see README/login page copy.
     pub credentials: HashMap<String, String>,
-    /// session token -> email.
-    pub sessions: HashMap<String, String>,
+    /// access token -> session entry (email + expiry).
+    pub sessions: HashMap<String, SessionEntry>,
+    /// refresh token -> session entry (email + expiry). Separate map from
+    /// `sessions` because refresh tokens live far longer (7 days vs. 30
+    /// minutes) and are rotated (removed-and-reissued) on every use, so
+    /// mixing them into one map would make expiry/rotation logic ambiguous
+    /// about which kind of token a given key is.
+    pub refresh_tokens: HashMap<String, SessionEntry>,
 }
 
 impl AppState {
@@ -765,6 +782,7 @@ pub fn seed() -> AppState {
         audit_log,
         credentials,
         sessions: HashMap::new(),
+        refresh_tokens: HashMap::new(),
     }
 }
 

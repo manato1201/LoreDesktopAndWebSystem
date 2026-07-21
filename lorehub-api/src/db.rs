@@ -135,7 +135,20 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
             }),
         audit_log: load_blob(pool, "audit_log").await.unwrap_or_default(),
         credentials: load_blob(pool, "credentials").await.unwrap_or_default(),
-        sessions: load_blob(pool, "sessions").await.unwrap_or_default(),
+        // Older saves predate the dual-token refactor and have `sessions` as
+        // a bare `token -> email` map rather than `token -> SessionEntry`
+        // (`{ email, expires_at }`). `load_blob_lenient` swallows that
+        // deserialize failure so an old save doesn't crash the server on
+        // startup; those sessions are simply dropped and every existing
+        // browser session will need to log in again, which is an acceptable
+        // one-time cost for closing a real security gap (tokens that used to
+        // never expire). `refresh_tokens` is an entirely new field with no
+        // legacy shape to fall back from, so a plain missing-key default
+        // (empty map) is enough.
+        sessions: load_blob_lenient(pool, "sessions")
+            .await
+            .unwrap_or_default(),
+        refresh_tokens: load_blob(pool, "refresh_tokens").await.unwrap_or_default(),
     })
 }
 
@@ -159,4 +172,5 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "audit_log", &state.audit_log).await;
     save_blob(pool, "credentials", &state.credentials).await;
     save_blob(pool, "sessions", &state.sessions).await;
+    save_blob(pool, "refresh_tokens", &state.refresh_tokens).await;
 }
