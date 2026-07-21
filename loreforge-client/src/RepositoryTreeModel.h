@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QQmlEngine>
 #include <QString>
+#include <QUrl>
 #include <QVariantMap>
 #include <QVector>
 
@@ -43,6 +44,8 @@ class RepositoryTreeModel : public QAbstractListModel
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
     Q_PROPERTY(int pendingCount READ pendingCount NOTIFY pendingCountChanged)
+    Q_PROPERTY(bool uploadBusy READ uploadBusy NOTIFY uploadBusyChanged)
+    Q_PROPERTY(QString uploadError READ uploadError NOTIFY uploadErrorChanged)
 
 public:
     enum Roles {
@@ -70,6 +73,8 @@ public:
     bool busy() const { return m_busy; }
     QString errorMessage() const { return m_errorMessage; }
     int pendingCount() const { return m_pendingChanges.size(); }
+    bool uploadBusy() const { return m_uploadBusy; }
+    QString uploadError() const { return m_uploadError; }
 
     Q_INVOKABLE void loadRepository(const QString &slug);
     Q_INVOKABLE void toggleExpanded(const QString &path);
@@ -91,12 +96,25 @@ public:
     /** POSTs .../tree/stage with staged=false, clearing any pending entry. */
     Q_INVOKABLE void unstageChange(const QString &path);
 
+    /**
+     * Binary Diff Viewer write path: reads `localFileUrl` off disk,
+     * base64-encodes it, and POSTs it to .../upload so lorehub-api serves
+     * those exact bytes back from GET .../image/{targetPath} afterwards. On
+     * a successful upload, stages `targetPath` as an "added" change via the
+     * existing stageChange() (no separate HTTP call duplicated here).
+     */
+    Q_INVOKABLE void uploadFile(const QUrl &localFileUrl, const QString &targetPath);
+
 signals:
     void countChanged();
     void busyChanged();
     void errorMessageChanged();
     void treeLoaded();
     void pendingCountChanged();
+    void uploadBusyChanged();
+    void uploadErrorChanged();
+    /** Emitted after a successful upload + auto-stage for `path`. */
+    void uploadSucceeded(const QString &path);
 
 private:
     struct FlatRow
@@ -117,6 +135,8 @@ private:
 
     void setBusy(bool busy);
     void setErrorMessage(const QString &message);
+    void setUploadBusy(bool busy);
+    void setUploadError(const QString &message);
     void applyTreeJson(const QJsonArray &array);
     void applyPendingJson(const QJsonArray &array);
     void fetchPending();
@@ -139,4 +159,6 @@ private:
     QVector<FlatRow> m_flatRows;
     /** path -> changeType ("added" | "modified" | "deleted") for staged files. */
     QMap<QString, QString> m_pendingChanges;
+    bool m_uploadBusy = false;
+    QString m_uploadError;
 };

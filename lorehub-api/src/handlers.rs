@@ -310,6 +310,21 @@ fn svg_response(svg: &str) -> Response {
     ([(header::CONTENT_TYPE, "image/svg+xml")], svg.to_string()).into_response()
 }
 
+/// Infers a `Content-Type` from a file path's extension for uploaded image
+/// bytes (whose real format we didn't otherwise track). Unrecognized
+/// extensions fall back to a generic binary type rather than guessing wrong.
+fn content_type_for_path(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
 pub async fn get_image(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
@@ -318,6 +333,18 @@ pub async fn get_image(
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
+
+    // User-uploaded content takes priority over the fixed demo SVGs — an
+    // upload to a path that happens to match a demo image should show what
+    // the user actually uploaded, not the seeded placeholder.
+    if let Some(bytes) = state.uploaded_images.get(&slug).and_then(|m| m.get(&path)) {
+        return (
+            [(header::CONTENT_TYPE, content_type_for_path(&path))],
+            bytes.clone(),
+        )
+            .into_response();
+    }
+
     match state.image_content.get(&path) {
         Some(svg) => svg_response(svg),
         None => not_found("no image content for this file"),
@@ -336,6 +363,61 @@ pub async fn get_image_before(
         Some(svg) => svg_response(svg),
         None => not_found("no 'before' image for this file"),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadImageRequest {
+    pub path: String,
+    pub content_base64: String,
+}
+
+/// Stores raw uploaded file bytes for `slug`/`path`, served back afterwards
+/// by `get_image` (see there for the per-repo-keyed lookup and content-type
+/// inference). This is the write side of the Binary Diff Viewer's "Add
+/// File" flow — LoreForge Client base64-encodes a local file and posts it
+/// here, then stages it via the existing `stage_change` endpoint.
+pub async fn upload_image(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(slug): Path<String>,
+    Json(body): Json<UploadImageRequest>,
+) -> Response {
+    use base64::Engine;
+
+    let mut state = ctx.write().await;
+    if !state.repositories.iter().any(|r| r.slug == slug) {
+        return not_found("repository not found");
+    }
+
+    let path = body.path.trim().to_string();
+    if path.is_empty() {
+        return bad_request("path is required");
+    }
+
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&body.content_base64) {
+        Ok(b) => b,
+        Err(_) => return bad_request("contentBase64 is not valid base64"),
+    };
+    if bytes.is_empty() {
+        return bad_request("uploaded file is empty");
+    }
+
+    state
+        .uploaded_images
+        .entry(slug.clone())
+        .or_default()
+        .insert(path.clone(), bytes);
+
+    state.record_audit(&user.name, "uploaded", &path);
+
+    let uploaded_images = state.uploaded_images.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "uploaded_images", &uploaded_images).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    StatusCode::CREATED.into_response()
 }
 
 pub async fn get_audio(

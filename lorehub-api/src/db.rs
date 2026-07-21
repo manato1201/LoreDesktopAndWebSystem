@@ -118,6 +118,7 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
             .await
             .unwrap_or_default(),
         audio_content: load_blob(pool, "audio_content").await.unwrap_or_default(),
+        uploaded_images: load_blob(pool, "uploaded_images").await.unwrap_or_default(),
         commits,
         branches,
         current_branch: load_blob(pool, "current_branch").await.unwrap_or_default(),
@@ -146,6 +147,7 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "image_content", &state.image_content).await;
     save_blob(pool, "image_content_before", &state.image_content_before).await;
     save_blob(pool, "audio_content", &state.audio_content).await;
+    save_blob(pool, "uploaded_images", &state.uploaded_images).await;
     save_blob(pool, "commits", &state.commits).await;
     save_blob(pool, "branches", &state.branches).await;
     save_blob(pool, "current_branch", &state.current_branch).await;
