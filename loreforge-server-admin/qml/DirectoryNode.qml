@@ -12,6 +12,7 @@ Rectangle {
     signal dragged()
     signal connectRequested(string sourceId)
     signal connectReleased(string sourceId, point globalPos)
+    signal removeRequested(string sourceId)
 
     width: 168
     height: 56
@@ -39,6 +40,27 @@ Rectangle {
         color: Theme.colorTextPrimary
         font.pixelSize: Theme.fontSizeCaption
         elide: Text.ElideRight
+    }
+
+    // Small always-visible delete affordance, matching the "✕" pattern used
+    // elsewhere in this codebase (e.g. loreforge-client's sparse-workspace
+    // tree) instead of a context menu, which this codebase has no component
+    // for.
+    Text {
+        text: "×"
+        color: Theme.colorTextSecondary
+        font.pixelSize: 14
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 2
+        z: 10
+
+        MouseArea {
+            anchors.fill: parent
+            anchors.margins: -5
+            cursorShape: Qt.PointingHandCursor
+            onClicked: node.removeRequested(node.nodeId)
+        }
     }
 
     Rectangle {
