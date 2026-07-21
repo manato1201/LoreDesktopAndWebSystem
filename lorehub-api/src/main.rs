@@ -48,7 +48,13 @@ async fn main() {
         .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true);
 
-    let public_routes = Router::new().route("/api/auth/login", post(handlers::login));
+    // `/api/auth/refresh` must stay public (no `require_auth` layer) — its
+    // entire purpose is recovering from an *expired* access token, so it
+    // can't itself require a valid one. It authenticates via the separate
+    // refresh-token cookie instead (see handlers::refresh).
+    let public_routes = Router::new()
+        .route("/api/auth/login", post(handlers::login))
+        .route("/api/auth/refresh", post(handlers::refresh));
 
     // Everything else requires a valid session, including plain reads —
     // lorehub-web forwards the session cookie from Server Components (see

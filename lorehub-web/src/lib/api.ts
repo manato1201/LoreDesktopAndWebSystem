@@ -16,17 +16,78 @@ import type {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 /**
+ * Client-side 401 recovery. When a browser-driven request comes back 401
+ * (the access token expired), we transparently call this once before
+ * falling back to each helper's normal 401 handling — the browser picks up
+ * the new `Set-Cookie`s from the response automatically since this call
+ * also uses `credentials: "include"`.
+ *
+ * Concurrent 401s (e.g. a page firing several `apiGet`s in parallel right
+ * after the access token expires) share a single in-flight refresh instead
+ * of each triggering their own — the second-and-later callers just await
+ * the same promise.
+ *
+ * This is the CSR half of the refresh story; the SSR half (Server
+ * Components, which can't act on a `Set-Cookie` mid-render) is handled by
+ * `src/proxy.ts` instead — see that file.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`${API_BASE}/api/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((res) => res.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+/**
+ * Runs `doFetch` and, on a 401 from a browser-driven call (no `cookie` —
+ * that means Server Component/SSR, where this in-memory retry can't help
+ * because there's no cookie jar and no way to relay a fresh `Set-Cookie`
+ * back to the real client anyway), attempts exactly one silent
+ * refresh-and-retry before handing the response back to the caller. If the
+ * refresh call itself fails, or the retried request 401s again for some
+ * other reason, the (possibly still-401) response is returned unchanged so
+ * each helper's existing 401 handling stays the final fallback.
+ */
+async function fetchWithRefresh(
+  doFetch: () => Promise<Response>,
+  cookie?: string,
+): Promise<Response> {
+  let res = await doFetch();
+  if (res.status === 401 && !cookie) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await doFetch();
+    }
+  }
+  return res;
+}
+
+/**
  * `cookie` is only needed when calling from a Server Component (see
  * src/lib/auth-server.ts) — Node has no ambient cookie jar. Client
  * Components omit it; the browser attaches the session cookie itself
  * because every call already sets `credentials: "include"`.
  */
 async function apiGet<T>(path: string, cookie?: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    cache: "no-store",
-    credentials: "include",
-    headers: cookie ? { Cookie: cookie } : undefined,
-  });
+  const res = await fetchWithRefresh(
+    () =>
+      fetch(`${API_BASE}${path}`, {
+        cache: "no-store",
+        credentials: "include",
+        headers: cookie ? { Cookie: cookie } : undefined,
+      }),
+    cookie,
+  );
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
   }
@@ -37,11 +98,15 @@ async function apiGetOrNull<T>(
   path: string,
   cookie?: string,
 ): Promise<T | null> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    cache: "no-store",
-    credentials: "include",
-    headers: cookie ? { Cookie: cookie } : undefined,
-  });
+  const res = await fetchWithRefresh(
+    () =>
+      fetch(`${API_BASE}${path}`, {
+        cache: "no-store",
+        credentials: "include",
+        headers: cookie ? { Cookie: cookie } : undefined,
+      }),
+    cookie,
+  );
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
@@ -54,13 +119,15 @@ async function apiSend<T>(
   path: string,
   body: unknown,
 ): Promise<T | null> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-    credentials: "include",
-  });
+  const res = await fetchWithRefresh(() =>
+    fetch(`${API_BASE}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      credentials: "include",
+    }),
+  );
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
     throw new Error(`${method} ${path} failed: ${res.status}`);
@@ -69,11 +136,13 @@ async function apiSend<T>(
 }
 
 async function apiDelete(path: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "DELETE",
-    cache: "no-store",
-    credentials: "include",
-  });
+  const res = await fetchWithRefresh(() =>
+    fetch(`${API_BASE}${path}`, {
+      method: "DELETE",
+      cache: "no-store",
+      credentials: "include",
+    }),
+  );
   if (res.status === 404) return false;
   if (!res.ok) {
     throw new Error(`DELETE ${path} failed: ${res.status}`);
