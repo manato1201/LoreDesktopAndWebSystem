@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2 Network Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2 Network Svg Multimedia)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -45,6 +45,8 @@ qt_add_qml_module(LoreForgeClient
         src/CommitListModel.cpp
         src/LoreImageProvider.h
         src/LoreImageProvider.cpp
+        src/AudioPlayerController.h
+        src/AudioPlayerController.cpp
 )
 
 target_include_directories(LoreForgeClient
@@ -62,6 +64,7 @@ target_link_libraries(LoreForgeClient
         Qt6::QuickDialogs2
         Qt6::Network
         Qt6::Svg
+        Qt6::Multimedia
 )
 
 set_target_properties(LoreForgeClient PROPERTIES

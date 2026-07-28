@@ -46,6 +46,9 @@ class RepositoryTreeModel : public QAbstractListModel
     Q_PROPERTY(int pendingCount READ pendingCount NOTIFY pendingCountChanged)
     Q_PROPERTY(bool uploadBusy READ uploadBusy NOTIFY uploadBusyChanged)
     Q_PROPERTY(QString uploadError READ uploadError NOTIFY uploadErrorChanged)
+    Q_PROPERTY(QString textContent READ textContent NOTIFY textContentChanged)
+    Q_PROPERTY(bool textLoading READ textLoading NOTIFY textLoadingChanged)
+    Q_PROPERTY(QString textError READ textError NOTIFY textErrorChanged)
 
 public:
     enum Roles {
@@ -75,6 +78,9 @@ public:
     int pendingCount() const { return m_pendingChanges.size(); }
     bool uploadBusy() const { return m_uploadBusy; }
     QString uploadError() const { return m_uploadError; }
+    QString textContent() const { return m_textContent; }
+    bool textLoading() const { return m_textLoading; }
+    QString textError() const { return m_textError; }
 
     Q_INVOKABLE void loadRepository(const QString &slug);
     Q_INVOKABLE void toggleExpanded(const QString &path);
@@ -105,6 +111,15 @@ public:
      */
     Q_INVOKABLE void uploadFile(const QUrl &localFileUrl, const QString &targetPath);
 
+    /**
+     * Text preview: fetches GET .../content/{path} (JSON `{"content": ...}`)
+     * via the shared ApiClient::networkManager() and exposes the result
+     * through textContent/textLoading/textError. QML triggers this when the
+     * selected file's kind is "text" — see RepositoryWorkspaceScreen.qml's
+     * textPreview Connections block.
+     */
+    Q_INVOKABLE void fetchFileContent(const QString &path);
+
 signals:
     void countChanged();
     void busyChanged();
@@ -115,6 +130,9 @@ signals:
     void uploadErrorChanged();
     /** Emitted after a successful upload + auto-stage for `path`. */
     void uploadSucceeded(const QString &path);
+    void textContentChanged();
+    void textLoadingChanged();
+    void textErrorChanged();
 
 private:
     struct FlatRow
@@ -137,6 +155,9 @@ private:
     void setErrorMessage(const QString &message);
     void setUploadBusy(bool busy);
     void setUploadError(const QString &message);
+    void setTextContent(const QString &content);
+    void setTextLoading(bool loading);
+    void setTextError(const QString &message);
     void applyTreeJson(const QJsonArray &array);
     void applyPendingJson(const QJsonArray &array);
     void fetchPending();
@@ -161,4 +182,7 @@ private:
     QMap<QString, QString> m_pendingChanges;
     bool m_uploadBusy = false;
     QString m_uploadError;
+    QString m_textContent;
+    bool m_textLoading = false;
+    QString m_textError;
 };
