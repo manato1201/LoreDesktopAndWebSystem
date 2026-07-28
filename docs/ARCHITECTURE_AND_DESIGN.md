@@ -55,7 +55,7 @@ graph TB
     style DB fill:#181818,color:#fff,stroke:#4d4d4d
 ```
 
-**現状の実装範囲の注記**: `ServerAdmin → ServerProc`(実プロセス起動/停止/PID・メモリ監視)と `ServerAdmin → Handlers`(権限グラフのApply)はどちらも実データで動作する実装。`ServerAdmin → Docker` のMinIO制御も実際の `docker` CLIを呼び出す実装だが、この開発環境にDockerが未インストールのため実機検証はできていない(コードレビューベース)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
+**現状の実装範囲の注記**: `ServerAdmin → ServerProc`(実プロセス起動/停止/PID・メモリ監視)、`ServerAdmin → Handlers`(権限グラフのApply)、`ServerAdmin → Docker` のMinIO制御(`docker run`/`stop`/`ps`/`stats`)はすべて実データ・実Docker環境で動作確認済み(コンテナの起動・ポートマッピング・`docker stats`による実CPU/メモリ取得・停止まで実機検証)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
 
 ## 3. コンポーネント詳細
 
@@ -77,7 +77,8 @@ graph TB
   - **Fork並みの実操作**: ファイルのステージング(Added/Modified/Deleted)、コミット作成、ブランチ作成/切替、Pull(明示的な再フェッチ)
   - **バイナリDiffビューア**: 画像Before/Afterスライダー(`LoreImageProvider` による認証付き非同期画像取得)、3Dモデルの視覚的Diffトグル(スタイライズされたワイヤーフレーム代替表現)
   - **Sparse Workspace Manager**: ディレクトリ単位でワークスペースに含める/含めないを選択、`QSettings` でリポジトリごとに永続化。除外時は配下の選択も連鎖的に解除
-- **今後**: 実バイナリアセットのアップロード/差分生成(現状はサーバー側デモデータを参照)
+  - **実画像アップロード**: ローカルの画像ファイルを選んでlorehub-apiへアップロードし、実バイトを保存(リポジトリ単位で分離)。成功時に自動でAdded扱いとしてステージング
+- **今後**: 画像以外(テキスト/音声/3Dモデル)のアセットアップロード、リフレッシュトークンの消費(現状はアクセストークンの30分TTLでセッション切れ)
 
 ### 3.3 LoreForge Server Admin (Desktop)
 
@@ -86,10 +87,10 @@ graph TB
 - **実装済み**:
   - 環境ステータスパネル(MinIO/Lore Serverの2カード)
   - **Lore Server実制御**: `lorehub-api.exe` をローカルプロセスとして起動/停止、PID・メモリ使用量(`tasklist` 経由)を監視。アプリ終了時も子プロセスを確実に回収(orphan防止)
-  - MinIODocker制御(`docker run`/`stop`/`ps`/`stats`、CPU/RAM表示)— コード実装済みだがこの開発環境にDocker未インストールのため実機未検証
-  - ディレクトリ×ロールのノードエディタUI、権限設定のローカル永続化(JSON)
-  - **権限グラフのApply**: ログインしてlorehub-apiへ `PUT /api/access-control/entries` を送信し、ノードエディタの権限グラフを実サーバーへ反映(パスごとのマージ、対象外パスは無傷)
-- **今後**: ノードエディタでのディレクトリ/ロール追加・削除UI(現状は既定の5+3ノード構成が前提)
+  - MinIODocker制御(`docker run`/`stop`/`ps`/`stats`、CPU/RAM表示)— 実Docker環境で動作確認済み
+  - **動的ノードエディタ**: ディレクトリ/ロールノードを自由に追加・削除可能(既定の5+3ノード構成は初期値であり上限ではない)。ノード削除時は関連する接続も連鎖的に除去、`QSettings`ではなくJSON設定ファイルへ永続化
+  - **権限グラフのApply**: ログインしてlorehub-apiへ `PUT /api/access-control/entries` を送信し、ノードエディタの権限グラフを実サーバーへ反映(パスごとのマージ、対象外パスは無傷)。動的追加したノードでも同じパイプラインで動作確認済み
+- **今後**: リフレッシュトークンの消費(現状はアクセストークンの30分TTLでセッション切れ→再ログインが必要)
 
 ## 4. データフロー: 認証シーケンス
 
@@ -262,7 +263,8 @@ flowchart TD
 ## 10. 現在の状態(このドキュメント作成時点)
 
 - ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)まで完了、lint/build検証済み
-- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応
-- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア、Sparse Workspace Managerまで完備
-- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、タブ視認性修正まで完備。MinIOのDocker制御はコード実装済みだが実機(Docker)未検証
-- ⏳ 未着手: LoreForge Clientでの実バイナリアセットアップロード/差分生成、Server Adminのノードエディタでのディレクトリ/ロール追加・削除UI、MinIO Docker制御の実機検証
+- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応、**アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証**
+- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**実画像ファイルのアップロード→自動ステージング**、Sparse Workspace Managerまで完備
+- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、**ノードエディタでのディレクトリ/ロールの動的追加・削除**、タブ視認性修正まで完備。**MinIOのDocker制御を実際のDocker環境で検証済み**(コンテナ起動・ポートマッピング・`docker stats`によるCPU/メモリ取得・停止まで実機確認)
+- ✅ lorehub-web: SSR経路(Proxy = このNext.jsバージョンでの`middleware.ts`改名後の名称)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応
+- ⏳ 未着手: LoreForge Clientでの画像以外(テキスト/音声/3Dモデル)の実アセットアップロード対応、LoreForge Client/Server Adminでのリフレッシュトークン消費(現状は30分でセッション切れ→再ログインが必要)

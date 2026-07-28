@@ -79,8 +79,9 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 
 | Method | Path | 説明 |
 |---|---|---|
-| POST | `/api/auth/login` | ログイン(公開エンドポイント) |
-| POST | `/api/auth/logout` | ログアウト |
+| POST | `/api/auth/login` | ログイン(公開エンドポイント)。アクセス+リフレッシュの2Cookieを発行 |
+| POST | `/api/auth/refresh` | リフレッシュトークンをローテーションし新しいトークン対を発行(公開エンドポイント) |
+| POST | `/api/auth/logout` | ログアウト(両トークンを失効) |
 | GET | `/api/auth/me` | 現在のユーザー情報 |
 | GET | `/api/repositories` | リポジトリ一覧 |
 | POST | `/api/repositories` | リポジトリ作成 |
@@ -88,6 +89,7 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | PATCH | `/api/repositories/{slug}` | rename/description/visibility更新 |
 | DELETE | `/api/repositories/{slug}` | リポジトリ削除(関連PRも削除) |
 | GET | `/api/repositories/{slug}/tree` | ファイルツリー |
+| POST | `/api/repositories/{slug}/upload` | 画像ファイルの実バイトをアップロード(リポジトリ単位で分離) |
 | POST | `/api/repositories/{slug}/tree/lock` | ファイルロック切替 |
 | GET | `/api/repositories/{slug}/content/{*path}` | テキストファイル内容 |
 | GET | `/api/repositories/{slug}/image/{*path}` | 画像プレビュー |
@@ -146,9 +148,12 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 ## 4. 認証・セッションの実装詳細
 
 - パスワードは argon2 でハッシュ化。デモアカウントは全員パスワード `"lorehub"` 共通(`state.rs` コメント参照)。
-- ログイン成功時、`Set-Cookie: lorehub_token=<token>; HttpOnly; SameSite=Lax; Max-Age=604800`
+- ログイン成功時、2つのCookieを発行: `lorehub_token`(アクセストークン、`Max-Age=1800`=30分)と `lorehub_refresh`(リフレッシュトークン、`Max-Age=604800`=7日)。両方とも `HttpOnly; SameSite=Lax`。
+- サーバー側は `AppState.sessions`/`refresh_tokens: HashMap<token, SessionEntry{email, expires_at}>` で有効期限を管理。`require_auth` はアクセストークンの `expires_at` を毎回チェックし、期限切れなら失効エントリを削除して401を返す。
+- `POST /api/auth/refresh` はリフレッシュトークンを検証し、**ローテーション**(古いリフレッシュトークンを破棄し新しいアクセス+リフレッシュ両方を再発行)する。古いリフレッシュトークンの再利用は401になる(盗用されたトークンの使い回しを防ぐ標準的な対策)。
 - Cookieは `localhost` ドメインに対して発行されるため、ポートが異なる `localhost:3000`(Web) と `localhost:4000`(API) の両方に自動送信される(ブラウザのCookieはホスト単位でありポート単位ではない)。
 - Next.jsのServer Componentはブラウザとは別プロセスなのでCookieジャーを持たない。`src/lib/auth-server.ts` の `getSessionCookieHeader()` が `next/headers` の `cookies()` から手動で取得し、API呼び出し時にヘッダとして転送する。
+- **透過的リフレッシュ(lorehub-webのみ)**: CSR(ブラウザからの直接fetch)は `src/lib/api.ts` の `fetchWithRefresh` が401を検知して1回だけ `/api/auth/refresh` を叩きリトライする。SSR(Server Component)はCookieを書き換えられないため、`src/proxy.ts`(このNext.jsバージョンで `middleware.ts` から改名された規約 — `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` 参照)がレンダリング前にアクセスCookie欠落を検知して先回りでリフレッシュする。LoreForge Client/Server Adminはこのリフレッシュを消費しないため、30分でセッションが切れたら再ログインが必要。
 
 ## 5. 永続化: kv_store 方式
 
@@ -179,7 +184,8 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 ## 7. 既知の制約 / 今後の課題
 
 - LoreForge ClientのVCS操作はlorehub-apiへの直接書き込みで完結しており、`push`と`commit`の区別がない(ローカル/リモートの分離が存在しないため — 詳細はARCHITECTURE_AND_DESIGN.md §3.2)。
-- LoreForge Server AdminのMinIO Docker制御(`DockerController`)はコード実装済みだが、この開発環境にDockerが無いため実機検証ができていない。
+- LoreForge Server AdminのMinIO Docker制御(`DockerController`)は実Docker環境で動作確認済み(コンテナ起動・ポートマッピング・`docker stats`によるCPU/メモリ取得・停止)。
+- LoreForge Client/Server Adminはリフレッシュトークンを消費しない。アクセストークンの30分TTLでセッションが切れた場合は再ログインが必要(lorehub-webのみSSR/CSR両経路で透過的に自動リフレッシュする)。
 - LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。
 - Server Adminのノードエディタはディレクトリ/ロールの追加・削除UIが無く、既定の5+3ノード構成が前提。
 - 認証は単一セッショントークン方式で、リフレッシュトークンやトークン失効APIは未実装。
