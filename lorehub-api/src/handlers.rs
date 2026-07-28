@@ -440,19 +440,135 @@ pub async fn delete_repository(
 pub async fn get_file_content(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
     match state.file_contents.get(&path) {
-        Some(content) => Json(serde_json::json!({ "content": content })).into_response(),
+        Some(content) => {
+            ranged_bytes_response(&headers, "text/plain; charset=utf-8", content.as_bytes())
+        }
         None => not_found("no text content for this file"),
     }
 }
 
-fn svg_response(svg: &str) -> Response {
-    ([(header::CONTENT_TYPE, "image/svg+xml")], svg.to_string()).into_response()
+/// A single inclusive byte range that has been validated against the
+/// resource's total length, or the absence/rejection of one.
+enum RangeOutcome {
+    /// No `Range` header was present, or it couldn't be parsed / used the
+    /// (unsupported) multi-range syntax — serve the whole resource as a
+    /// normal `200 OK`, per the HTTP spec's guidance to ignore malformed or
+    /// unsupported `Range` headers rather than erroring on them.
+    FullContent,
+    /// `Range: bytes=<start>-<end>` resolved to a satisfiable, inclusive
+    /// `[start, end]` window within the resource.
+    Partial { start: u64, end: u64 },
+    /// The requested range starts at or beyond the resource's length (or is
+    /// otherwise empty/invalid in a way the spec says to reject rather than
+    /// ignore) — `416 Range Not Satisfiable`.
+    Unsatisfiable,
+}
+
+/// Parses the simple single-range case of an incoming `Range` request
+/// header (`bytes=<start>-<end>`, `bytes=<start>-`, or the suffix form
+/// `bytes=-<n>`) against a resource of `total_len` bytes. Multi-range
+/// requests (`bytes=0-10,20-30`) and anything not prefixed with `bytes=`
+/// are treated as absent (`FullContent`) rather than rejected, matching how
+/// browsers/curl behave when a server doesn't support what they asked for.
+fn parse_range(headers: &HeaderMap, total_len: u64) -> RangeOutcome {
+    let Some(raw) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
+        return RangeOutcome::FullContent;
+    };
+    let Some(spec) = raw.strip_prefix("bytes=") else {
+        return RangeOutcome::FullContent;
+    };
+    if spec.contains(',') {
+        return RangeOutcome::FullContent;
+    }
+
+    if total_len == 0 {
+        return RangeOutcome::Unsatisfiable;
+    }
+
+    let Some((start_str, end_str)) = spec.split_once('-') else {
+        return RangeOutcome::FullContent;
+    };
+
+    let (start, end) = if start_str.is_empty() {
+        // Suffix range: last `n` bytes of the resource.
+        let Ok(n) = end_str.parse::<u64>() else {
+            return RangeOutcome::FullContent;
+        };
+        if n == 0 {
+            return RangeOutcome::Unsatisfiable;
+        }
+        let n = n.min(total_len);
+        (total_len - n, total_len - 1)
+    } else {
+        let Ok(start) = start_str.parse::<u64>() else {
+            return RangeOutcome::FullContent;
+        };
+        let end = if end_str.is_empty() {
+            total_len - 1
+        } else {
+            match end_str.parse::<u64>() {
+                Ok(e) => e.min(total_len - 1),
+                Err(_) => return RangeOutcome::FullContent,
+            }
+        };
+        (start, end)
+    };
+
+    if start >= total_len || start > end {
+        return RangeOutcome::Unsatisfiable;
+    }
+
+    RangeOutcome::Partial { start, end }
+}
+
+/// Serves `bytes` with real HTTP Range support: a satisfiable `Range`
+/// header yields `206 Partial Content` with `Content-Range`/`Content-Length`
+/// scoped to the requested window; no (or an unusable) `Range` header
+/// yields the full body as `200 OK`; an out-of-bounds range yields
+/// `416 Range Not Satisfiable`. `Accept-Ranges: bytes` is advertised on
+/// every response so clients know ranged requests are supported.
+fn ranged_bytes_response(headers: &HeaderMap, content_type: &str, bytes: &[u8]) -> Response {
+    let total = bytes.len() as u64;
+    match parse_range(headers, total) {
+        RangeOutcome::FullContent => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type.to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+            ],
+            bytes.to_vec(),
+        )
+            .into_response(),
+        RangeOutcome::Partial { start, end } => {
+            let slice = bytes[start as usize..=end as usize].to_vec();
+            (
+                StatusCode::PARTIAL_CONTENT,
+                [
+                    (header::CONTENT_TYPE, content_type.to_string()),
+                    (header::ACCEPT_RANGES, "bytes".to_string()),
+                    (
+                        header::CONTENT_RANGE,
+                        format!("bytes {start}-{end}/{total}"),
+                    ),
+                    (header::CONTENT_LENGTH, slice.len().to_string()),
+                ],
+                slice,
+            )
+                .into_response()
+        }
+        RangeOutcome::Unsatisfiable => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{total}"))],
+        )
+            .into_response(),
+    }
 }
 
 /// Infers a `Content-Type` from a file path's extension for uploaded image
@@ -473,6 +589,7 @@ fn content_type_for_path(path: &str) -> &'static str {
 pub async fn get_image(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
@@ -483,15 +600,11 @@ pub async fn get_image(
     // upload to a path that happens to match a demo image should show what
     // the user actually uploaded, not the seeded placeholder.
     if let Some(bytes) = state.uploaded_images.get(&slug).and_then(|m| m.get(&path)) {
-        return (
-            [(header::CONTENT_TYPE, content_type_for_path(&path))],
-            bytes.clone(),
-        )
-            .into_response();
+        return ranged_bytes_response(&headers, content_type_for_path(&path), bytes);
     }
 
     match state.image_content.get(&path) {
-        Some(svg) => svg_response(svg),
+        Some(svg) => ranged_bytes_response(&headers, "image/svg+xml", svg.as_bytes()),
         None => not_found("no image content for this file"),
     }
 }
@@ -499,13 +612,14 @@ pub async fn get_image(
 pub async fn get_image_before(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
     match state.image_content_before.get(&path) {
-        Some(svg) => svg_response(svg),
+        Some(svg) => ranged_bytes_response(&headers, "image/svg+xml", svg.as_bytes()),
         None => not_found("no 'before' image for this file"),
     }
 }
@@ -568,13 +682,14 @@ pub async fn upload_image(
 pub async fn get_audio(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
     match state.audio_content.get(&path) {
-        Some(bytes) => ([(header::CONTENT_TYPE, "audio/wav")], bytes.clone()).into_response(),
+        Some(bytes) => ranged_bytes_response(&headers, "audio/wav", bytes),
         None => not_found("no audio content for this file"),
     }
 }
