@@ -360,8 +360,12 @@ void RepositoryTreeModel::fetchFileContent(const QString &path)
             return;
         }
 
-        const QJsonObject obj = QJsonDocument::fromJson(bytes).object();
-        const QString content = obj.value("content").toString();
+        // The content endpoint returns the file's raw text bytes directly
+        // (Content-Type: text/plain) rather than JSON-wrapped
+        // {"content": "..."} now that it supports real HTTP Range requests
+        // alongside lorehub-api's other streamed-content endpoints — a byte
+        // range of a JSON document wouldn't mean anything to this preview.
+        const QString content = QString::fromUtf8(bytes);
         std::fprintf(stderr, "RepositoryTreeModel: fetched content for %s -> %d bytes (snippet: %s)\n",
                      qPrintable(path), static_cast<int>(content.size()),
                      qPrintable(content.left(80)));

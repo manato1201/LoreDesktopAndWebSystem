@@ -199,14 +199,31 @@ export function toggleLock(
   return apiSend("POST", `/api/repositories/${slug}/tree/lock`, { path, lock });
 }
 
+/**
+ * `GET /api/repositories/:slug/content/:path` now returns the file's raw
+ * text bytes directly (`Content-Type: text/plain`) rather than
+ * JSON-wrapped `{ content: string }` — a byte range of a JSON document
+ * would be meaningless to a text preview UI, so this endpoint dropped the
+ * JSON envelope when it gained real HTTP Range support alongside the other
+ * streamed-content endpoints. `apiGetOrNull`'s `.json()` parsing doesn't
+ * apply here, so this reads the response body as text directly instead.
+ */
 export async function getFileContent(
   slug: string,
   path: string,
 ): Promise<string | null> {
-  const result = await apiGetOrNull<{ content: string }>(
-    `/api/repositories/${slug}/content/${path}`,
+  const apiPath = `/api/repositories/${slug}/content/${path}`;
+  const res = await fetchWithRefresh(() =>
+    fetch(`${API_BASE}${apiPath}`, {
+      cache: "no-store",
+      credentials: "include",
+    }),
   );
-  return result?.content ?? null;
+  if (res.status === 404 || res.status === 401) return null;
+  if (!res.ok) {
+    throw new Error(`GET ${apiPath} failed: ${res.status}`);
+  }
+  return res.text();
 }
 
 export function imageUrl(slug: string, path: string): string {
