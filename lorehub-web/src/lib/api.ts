@@ -58,7 +58,7 @@ function refreshAccessToken(): Promise<boolean> {
  * other reason, the (possibly still-401) response is returned unchanged so
  * each helper's existing 401 handling stays the final fallback.
  */
-async function fetchWithRefresh(
+export async function fetchWithRefresh(
   doFetch: () => Promise<Response>,
   cookie?: string,
 ): Promise<Response> {
