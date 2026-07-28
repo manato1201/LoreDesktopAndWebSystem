@@ -6,10 +6,13 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <cstdio>
 
 AuthController::AuthController(QObject *parent)
     : QObject(parent)
 {
+    m_refreshTimer.setInterval(kRefreshIntervalMs);
+    connect(&m_refreshTimer, &QTimer::timeout, this, &AuthController::refreshSession);
 }
 
 void AuthController::login(const QString &email, const QString &password)
@@ -53,6 +56,7 @@ void AuthController::handleLoginReply(QNetworkReply *reply)
 
     m_loggedIn = true;
     emit loggedInChanged();
+    m_refreshTimer.start();
 }
 
 void AuthController::logout()
@@ -61,10 +65,43 @@ void AuthController::logout()
     QNetworkReply *reply = ApiClient::networkManager().post(request, QByteArray());
     connect(reply, &QNetworkReply::finished, this, [reply]() { reply->deleteLater(); });
 
+    setLoggedOut();
+}
+
+void AuthController::setLoggedOut()
+{
+    m_refreshTimer.stop();
     m_loggedIn = false;
     emit loggedInChanged();
     m_currentUserName.clear();
     emit currentUserNameChanged();
+}
+
+void AuthController::refreshSession()
+{
+    // No request body — the refresh token rides along automatically as a
+    // cookie in ApiClient's shared QNetworkAccessManager's cookie jar,
+    // deposited there by login()'s Set-Cookie response.
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/auth/refresh"));
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QByteArray());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok = reply->error() == QNetworkReply::NoError && httpStatus == 200;
+        std::fprintf(stderr, "AuthController: session refresh %s (http %d)\n",
+                     ok ? "succeeded" : "failed", httpStatus);
+        std::fflush(stderr);
+
+        if (!ok) {
+            // Refresh token expired or the call errored outright — the
+            // session is gone either way. Fall back to the same
+            // logged-out state a 401 on any other request would
+            // eventually force the user into, rather than leaving a
+            // zombie timer hammering a dead session every interval.
+            setLoggedOut();
+        }
+
+        reply->deleteLater();
+    });
 }
 
 void AuthController::setBusy(bool busy)

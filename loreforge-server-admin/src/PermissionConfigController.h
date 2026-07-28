@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QQmlEngine>
 #include <QString>
+#include <QTimer>
 #include <QVariantList>
 
 class QJsonArray;
@@ -22,6 +23,15 @@ class QNetworkReply;
  * saveConfig() to the real lorehub-api over HTTP, so LoreForge Server
  * Admin's graph and lorehub-api's live AppState.access_entries stay in
  * sync instead of the graph only ever reaching a local file.
+ *
+ * Also owns this connected session's proactive keep-alive, the same pattern
+ * as loreforge-client's AuthController: once login() succeeds, a QTimer
+ * periodically POSTs /api/auth/refresh through the shared
+ * ApiClient::networkManager() so `lorehub_token` (30-min TTL,
+ * docs/TECHNICAL_REFERENCE.md §4) doesn't go stale while this panel stays
+ * open between Apply presses. Server Admin's session is much shorter-lived
+ * by nature than Client's, but the same pattern is applied here too for
+ * consistency.
  */
 class PermissionConfigController : public QObject
 {
@@ -75,10 +85,17 @@ signals:
     void applySuccessChanged();
 
 private:
+    // Mirrors AuthController::kRefreshIntervalMs (loreforge-client) — well
+    // under the 30-minute ACCESS_TOKEN_TTL_SECS server-side TTL so the
+    // access token is always refreshed with a safety margin to spare.
+    static constexpr int kRefreshIntervalMs = 25 * 60 * 1000;
+
     void setLastError(const QString &error);
     void setApplying(bool applying);
     void setApplyError(const QString &error);
     void setApplySuccess(const QString &message);
+    void setDisconnected();
+    void refreshSession();
 
     // Shared by saveConfig() and applyToServer(): turns the combined
     // (directory + role, tagged by "type") node list and the from/to
@@ -100,4 +117,5 @@ private:
     bool m_applying = false;
     QString m_applyError;
     QString m_applySuccess;
+    QTimer m_refreshTimer;
 };
