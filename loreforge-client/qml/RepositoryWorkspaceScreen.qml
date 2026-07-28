@@ -8,6 +8,7 @@ Item {
 
     property var treeModel
     property var commitModel
+    property var audioPlayer
     property var authController
     property string slug: ""
     property string repoName: ""
@@ -863,6 +864,205 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 text: (modelPreview.variant === "before" ? "Before" : "After") + " — " + (workspace.selectedFile.name || "")
                                 color: Theme.colorTextSecondary
+                                font.pixelSize: Theme.fontSizeSmall
+                            }
+                        }
+                    }
+
+                    // Text kind: scrollable, read-only monospace preview of
+                    // GET .../content/{path}, ported from lorehub-web's
+                    // TextFileContent.tsx/ReadmePreview.tsx (this is a plain
+                    // monospace preview, not the markdown-rendered README
+                    // variant — parity with lorehub-web's plain-text path).
+                    Item {
+                        id: textPreview
+                        visible: workspace.selectedFile.kind === "text"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 220
+
+                        Connections {
+                            target: workspace
+                            function onSelectedPathChanged() {
+                                if (!workspace.treeModel || workspace.selectedPath.length === 0)
+                                    return
+                                const row = workspace.treeModel.rowForPath(workspace.selectedPath)
+                                if (row.kind === "text")
+                                    workspace.treeModel.fetchFileContent(workspace.selectedPath)
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: Theme.radiusComfortable
+                            color: Theme.colorSurfaceElevated
+                            clip: true
+
+                            Text {
+                                visible: workspace.treeModel && workspace.treeModel.textLoading
+                                anchors.centerIn: parent
+                                text: "Loading…"
+                                color: Theme.colorTextSecondary
+                                font.pixelSize: Theme.fontSizeCaption
+                            }
+
+                            Text {
+                                visible: workspace.treeModel && !workspace.treeModel.textLoading
+                                    && workspace.treeModel.textError.length > 0
+                                anchors.centerIn: parent
+                                width: parent.width - Theme.spacingUnit * 2
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                text: workspace.treeModel ? workspace.treeModel.textError : ""
+                                color: Theme.colorNegative
+                                font.pixelSize: Theme.fontSizeCaption
+                            }
+
+                            Flickable {
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingUnit
+                                visible: workspace.treeModel && !workspace.treeModel.textLoading
+                                    && workspace.treeModel.textError.length === 0
+                                contentWidth: width
+                                contentHeight: textContentEdit.implicitHeight
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                TextEdit {
+                                    id: textContentEdit
+                                    width: parent.width
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: TextEdit.Wrap
+                                    text: workspace.treeModel ? workspace.treeModel.textContent : ""
+                                    color: Theme.colorTextSecondary
+                                    font.family: "Consolas"
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+                        }
+                    }
+
+                    // Audio kind: real playback (not a static placeholder),
+                    // ported from lorehub-web's AudioPlayer.tsx in spirit —
+                    // play/pause, click-to-seek, mm:ss duration display. The
+                    // real waveform rendering is intentionally scoped out
+                    // (see AudioPlayerController.h); this is a plain
+                    // progress/seek bar.
+                    Item {
+                        id: audioPreview
+                        visible: workspace.selectedFile.kind === "audio"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 96
+
+                        function formatTime(ms) {
+                            if (!isFinite(ms) || ms <= 0)
+                                return "0:00"
+                            const totalSeconds = Math.floor(ms / 1000)
+                            const m = Math.floor(totalSeconds / 60)
+                            const s = totalSeconds % 60
+                            return m + ":" + (s < 10 ? "0" + s : s)
+                        }
+
+                        Connections {
+                            target: workspace
+                            function onSelectedPathChanged() {
+                                if (!workspace.audioPlayer)
+                                    return
+                                const row = workspace.treeModel && workspace.selectedPath.length > 0
+                                    ? workspace.treeModel.rowForPath(workspace.selectedPath) : ({})
+                                if (row.kind === "audio" && workspace.slug.length > 0)
+                                    workspace.audioPlayer.load(workspace.slug, workspace.selectedPath)
+                                else
+                                    workspace.audioPlayer.pause()
+                            }
+                        }
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: Theme.spacingUnit
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingUnit
+
+                                Rectangle {
+                                    width: 36
+                                    height: 36
+                                    radius: 18
+                                    color: Theme.colorAccent
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: (workspace.audioPlayer && workspace.audioPlayer.playing) ? "❙❙" : "▶"
+                                        color: Theme.colorBackgroundBase
+                                        font.bold: true
+                                        font.pixelSize: Theme.fontSizeCaption
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (!workspace.audioPlayer)
+                                                return
+                                            if (workspace.audioPlayer.playing)
+                                                workspace.audioPlayer.pause()
+                                            else
+                                                workspace.audioPlayer.play()
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: seekTrack
+                                    Layout.fillWidth: true
+                                    implicitHeight: 8
+                                    radius: 4
+                                    color: Theme.colorSurfaceInteractive
+
+                                    Rectangle {
+                                        height: parent.height
+                                        radius: 4
+                                        color: Theme.colorAccent
+                                        width: (workspace.audioPlayer && workspace.audioPlayer.duration > 0)
+                                            ? parent.width * (workspace.audioPlayer.position / workspace.audioPlayer.duration)
+                                            : 0
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: (mouse) => {
+                                            if (!workspace.audioPlayer || workspace.audioPlayer.duration <= 0)
+                                                return
+                                            const pct = Math.min(1, Math.max(0, mouse.x / seekTrack.width))
+                                            workspace.audioPlayer.seek(pct * workspace.audioPlayer.duration)
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: audioPreview.formatTime(workspace.audioPlayer ? workspace.audioPlayer.position : 0)
+                                        + " / " + audioPreview.formatTime(workspace.audioPlayer ? workspace.audioPlayer.duration : 0)
+                                    color: Theme.colorTextSecondary
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            Text {
+                                visible: workspace.audioPlayer && workspace.audioPlayer.loading
+                                text: "Loading audio…"
+                                color: Theme.colorTextSecondary
+                                font.pixelSize: Theme.fontSizeSmall
+                            }
+
+                            Text {
+                                visible: workspace.audioPlayer && !workspace.audioPlayer.loading
+                                    && workspace.audioPlayer.errorMessage.length > 0
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: workspace.audioPlayer ? workspace.audioPlayer.errorMessage : ""
+                                color: Theme.colorNegative
                                 font.pixelSize: Theme.fontSizeSmall
                             }
                         }

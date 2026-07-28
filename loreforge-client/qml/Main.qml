@@ -36,6 +36,10 @@ ApplicationWindow {
         id: commitModelInstance
     }
 
+    AudioPlayerController {
+        id: audioPlayerInstance
+    }
+
     Loader {
         anchors.fill: parent
         sourceComponent: {
@@ -72,6 +76,7 @@ ApplicationWindow {
         RepositoryWorkspaceScreen {
             treeModel: treeModelInstance
             commitModel: commitModelInstance
+            audioPlayer: audioPlayerInstance
             authController: authControllerInstance
             slug: window.activeSlug
             repoName: window.activeRepoName

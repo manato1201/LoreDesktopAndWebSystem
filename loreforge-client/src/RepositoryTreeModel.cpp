@@ -9,6 +9,7 @@
 #include <QNetworkRequest>
 #include <QSettings>
 #include <QUrl>
+#include <cstdio>
 
 RepositoryTreeModel::RepositoryTreeModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -327,6 +328,48 @@ void RepositoryTreeModel::uploadFile(const QUrl &localFileUrl, const QString &ta
     });
 }
 
+void RepositoryTreeModel::fetchFileContent(const QString &path)
+{
+    if (m_slug.isEmpty())
+        return;
+
+    setTextError(QString());
+    setTextContent(QString());
+    setTextLoading(true);
+
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + "/api/repositories/" + m_slug + "/content/" + path));
+    QNetworkReply *reply = ApiClient::networkManager().get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, path]() {
+        setTextLoading(false);
+
+        if (reply->error() != QNetworkReply::NoError) {
+            setTextError(reply->errorString());
+            std::fprintf(stderr, "RepositoryTreeModel: content fetch failed for %s (%s)\n",
+                         qPrintable(path), qPrintable(reply->errorString()));
+            std::fflush(stderr);
+            reply->deleteLater();
+            return;
+        }
+
+        const QByteArray bytes = reply->readAll();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+
+        if (httpStatus != 200) {
+            setTextError(QStringLiteral("failed to load content (HTTP %1)").arg(httpStatus));
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(bytes).object();
+        const QString content = obj.value("content").toString();
+        std::fprintf(stderr, "RepositoryTreeModel: fetched content for %s -> %d bytes (snippet: %s)\n",
+                     qPrintable(path), static_cast<int>(content.size()),
+                     qPrintable(content.left(80)));
+        std::fflush(stderr);
+        setTextContent(content);
+    });
+}
+
 void RepositoryTreeModel::fetchPending()
 {
     if (m_slug.isEmpty())
@@ -558,4 +601,28 @@ void RepositoryTreeModel::setUploadError(const QString &message)
         return;
     m_uploadError = message;
     emit uploadErrorChanged();
+}
+
+void RepositoryTreeModel::setTextContent(const QString &content)
+{
+    if (m_textContent == content)
+        return;
+    m_textContent = content;
+    emit textContentChanged();
+}
+
+void RepositoryTreeModel::setTextLoading(bool loading)
+{
+    if (m_textLoading == loading)
+        return;
+    m_textLoading = loading;
+    emit textLoadingChanged();
+}
+
+void RepositoryTreeModel::setTextError(const QString &message)
+{
+    if (m_textError == message)
+        return;
+    m_textError = message;
+    emit textErrorChanged();
 }
