@@ -14,6 +14,7 @@
 #include <QNetworkRequest>
 #include <QUrl>
 #include <QVariantMap>
+#include <cstdio>
 
 namespace {
 
@@ -49,6 +50,9 @@ PermissionConfigController::PermissionConfigController(QObject *parent)
     m_configPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/config/access-control.json");
     loadConfig();
+
+    m_refreshTimer.setInterval(kRefreshIntervalMs);
+    connect(&m_refreshTimer, &QTimer::timeout, this, &PermissionConfigController::refreshSession);
 }
 
 void PermissionConfigController::setLastError(const QString &error)
@@ -281,6 +285,41 @@ void PermissionConfigController::login(const QString &email, const QString &pass
         m_connectedAs = user.value(QStringLiteral("name")).toString();
         m_connected = true;
         emit connectedChanged();
+        m_refreshTimer.start();
+
+        reply->deleteLater();
+    });
+}
+
+void PermissionConfigController::setDisconnected()
+{
+    m_refreshTimer.stop();
+    m_connected = false;
+    m_connectedAs.clear();
+    emit connectedChanged();
+}
+
+void PermissionConfigController::refreshSession()
+{
+    // No request body — the refresh token rides along automatically as a
+    // cookie in ApiClient's shared QNetworkAccessManager's cookie jar,
+    // deposited there by login()'s Set-Cookie response.
+    QNetworkRequest request(QUrl(ApiClient::baseUrl() + QStringLiteral("/api/auth/refresh")));
+    QNetworkReply *reply = ApiClient::networkManager().post(request, QByteArray());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok = reply->error() == QNetworkReply::NoError && httpStatus == 200;
+        std::fprintf(stderr, "PermissionConfigController: session refresh %s (http %d)\n",
+                     ok ? "succeeded" : "failed", httpStatus);
+        std::fflush(stderr);
+
+        if (!ok) {
+            // Refresh token expired or the call errored outright — fall
+            // back to the disconnected state, same as if the user had
+            // never logged in, instead of leaving a zombie timer hammering
+            // a dead session every interval.
+            setDisconnected();
+        }
 
         reply->deleteLater();
     });
