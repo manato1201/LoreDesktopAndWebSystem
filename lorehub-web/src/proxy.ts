@@ -13,7 +13,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
  * `Set-Cookie` for the browser is forwarded verbatim instead, since that
  * one doesn't need reparsing.
  */
-function cookieNameValue(setCookieStr: string): [string, string] | null {
+export function cookieNameValue(setCookieStr: string): [string, string] | null {
   const eq = setCookieStr.indexOf("=");
   if (eq === -1) return null;
   const semi = setCookieStr.indexOf(";");
@@ -25,7 +25,7 @@ function cookieNameValue(setCookieStr: string): [string, string] | null {
 }
 
 /** Merges fresh `Set-Cookie` values into an existing `Cookie` request header string, overriding same-named entries. */
-function mergeCookieHeader(
+export function mergeCookieHeader(
   existing: string | null,
   setCookies: string[],
 ): string {
@@ -57,7 +57,7 @@ function mergeCookieHeader(
  * whose comma would collide with a naive split). Falls back to a
  * name-aware split if `getSetCookie` isn't available for some reason.
  */
-function getSetCookies(headers: Headers): string[] {
+export function getSetCookies(headers: Headers): string[] {
   const withGetSetCookie = headers as Headers & {
     getSetCookie?: () => string[];
   };
