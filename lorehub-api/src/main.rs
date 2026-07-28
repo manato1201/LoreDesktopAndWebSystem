@@ -79,7 +79,7 @@ pub fn build_router(shared_state: state::SharedState) -> Router {
         )
         .route(
             "/api/repositories/{slug}/upload",
-            post(handlers::upload_image),
+            post(handlers::upload_file),
         )
         .route(
             "/api/repositories/{slug}/audio/{*path}",

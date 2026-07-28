@@ -1118,11 +1118,15 @@ Item {
         }
 
         // --- Add File (Binary Diff Viewer write path) ---
-        // Lets the user pick a real local image file and upload it via
-        // RepositoryTreeModel::uploadFile(), which POSTs the bytes to
-        // lorehub-api and auto-stages the target path as an "added" change.
-        // Scoped to images only (png/jpg/jpeg/gif/webp/svg) — this feature
-        // intentionally does not extend to text/audio/model3d files.
+        // Lets the user pick a real local image, text, or audio file and
+        // upload it via RepositoryTreeModel::uploadFile(), which POSTs the
+        // bytes to lorehub-api and auto-stages the target path as an
+        // "added" change. lorehub-api infers image/text/audio from the
+        // target path's extension server-side, so this dialog just needs to
+        // offer the right extensions — no client-side kind picker needed.
+        // Deliberately does not extend to 3D model files: neither
+        // loreforge-client nor lorehub-web has a real 3D geometry loader, so
+        // uploading model bytes would never actually be consumed anywhere.
         Rectangle {
             id: uploadPanel
             Layout.fillWidth: true
@@ -1147,8 +1151,13 @@ Item {
 
             FileDialog {
                 id: uploadFileDialog
-                title: "Choose an image to upload"
-                nameFilters: ["Images (*.png *.jpg *.jpeg *.gif *.webp *.svg)"]
+                title: "Choose a file to upload"
+                nameFilters: [
+                    "Images (*.png *.jpg *.jpeg *.gif *.webp *.svg)",
+                    "Text (*.txt *.md *.json *.yaml *.yml)",
+                    "Audio (*.wav *.mp3)",
+                    "All Files (*)"
+                ]
                 onAccepted: {
                     uploadPanel.pickedFileUrl = selectedFile
                     uploadPanel.pickedFileName = selectedFile.toString().split("/").pop()
@@ -1183,7 +1192,7 @@ Item {
                         Text {
                             id: chooseLabel
                             anchors.centerIn: parent
-                            text: uploadPanel.pickedFileName.length > 0 ? uploadPanel.pickedFileName : "Choose Image…"
+                            text: uploadPanel.pickedFileName.length > 0 ? uploadPanel.pickedFileName : "Choose File…"
                             color: Theme.colorTextPrimary
                             font.pixelSize: Theme.fontSizeCaption
                             elide: Text.ElideMiddle

@@ -103,11 +103,15 @@ public:
     Q_INVOKABLE void unstageChange(const QString &path);
 
     /**
-     * Binary Diff Viewer write path: reads `localFileUrl` off disk,
-     * base64-encodes it, and POSTs it to .../upload so lorehub-api serves
-     * those exact bytes back from GET .../image/{targetPath} afterwards. On
-     * a successful upload, stages `targetPath` as an "added" change via the
-     * existing stageChange() (no separate HTTP call duplicated here).
+     * "Add File" write path: reads `localFileUrl` off disk, base64-encodes
+     * it, and POSTs it to .../upload so lorehub-api serves those exact
+     * bytes back afterwards from GET .../image/{targetPath},
+     * .../content/{targetPath}, or .../audio/{targetPath} — lorehub-api
+     * infers which of the three from `targetPath`'s extension server-side,
+     * so this method doesn't need to know or care what kind of file it's
+     * uploading. On a successful upload, stages `targetPath` as an "added"
+     * change via the existing stageChange() (no separate HTTP call
+     * duplicated here).
      */
     Q_INVOKABLE void uploadFile(const QUrl &localFileUrl, const QString &targetPath);
 
