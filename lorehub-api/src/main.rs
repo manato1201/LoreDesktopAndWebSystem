@@ -4,6 +4,8 @@ mod handlers;
 mod image_assets;
 mod models;
 mod state;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 
@@ -13,26 +15,12 @@ use axum::{Router, middleware};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-
-    let pool = db::connect("lorehub.db").await;
-    let initial_state = match db::load_state(&pool).await {
-        Some(state) => {
-            tracing::info!("loaded persisted state from lorehub.db");
-            state
-        }
-        None => {
-            tracing::info!("no persisted state found — seeding lorehub.db");
-            let seeded = state::seed();
-            db::save_all(&pool, &seeded).await;
-            seeded
-        }
-    };
-
-    let shared_state: state::SharedState = Arc::new(state::AppContext::new(initial_state, pool));
-
+/// Builds the full `Router` (public + protected routes, CORS, tracing) bound
+/// to `shared_state`. Factored out of `main` so integration tests
+/// (`src/tests/`) can drive the exact same routing/middleware stack via
+/// `tower::ServiceExt::oneshot` against an isolated, in-memory-backed
+/// `SharedState` instead of a real TCP listener.
+pub fn build_router(shared_state: state::SharedState) -> Router {
     // Dev-only CORS scoped to the Next.js dev server. `allow_credentials`
     // requires an explicit origin (no `Any`) per the CORS spec.
     let cors = CorsLayer::new()
@@ -148,11 +136,33 @@ async fn main() {
             handlers::require_auth,
         ));
 
-    let app = public_routes
+    public_routes
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(shared_state);
+        .with_state(shared_state)
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let pool = db::connect("lorehub.db").await;
+    let initial_state = match db::load_state(&pool).await {
+        Some(state) => {
+            tracing::info!("loaded persisted state from lorehub.db");
+            state
+        }
+        None => {
+            tracing::info!("no persisted state found — seeding lorehub.db");
+            let seeded = state::seed();
+            db::save_all(&pool, &seeded).await;
+            seeded
+        }
+    };
+
+    let shared_state: state::SharedState = Arc::new(state::AppContext::new(initial_state, pool));
+    let app = build_router(shared_state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4000")
         .await
