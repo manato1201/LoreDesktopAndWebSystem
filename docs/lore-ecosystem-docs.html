@@ -509,7 +509,7 @@
             <div class="arch-box" style="grid-column: 3 / 4;">
               <div class="k">Infra</div>
               <div class="name">Docker</div>
-              <div class="stack">MinIO(コード実装済み・実機未検証)</div>
+              <div class="stack">MinIO(実Docker環境で動作確認済み)</div>
             </div>
           </div>
         </div>
@@ -544,6 +544,7 @@
             <li>コミット履歴ビュー(ブランチ別カラー)</li>
             <li>Fork並みの実操作 — ステージング/コミット/ブランチ作成・切替/Pull <span class="badge done">完了</span></li>
             <li>バイナリDiffビューア — 画像スライダー/3Dモデルトグル <span class="badge done">完了</span></li>
+            <li>実画像アップロード→自動ステージング <span class="badge done">完了</span></li>
             <li>Sparse Workspace Manager <span class="badge done">完了</span></li>
           </ul>
         </div>
@@ -553,8 +554,8 @@
           <ul>
             <li>環境ステータスパネル・タブ視認性修正済み</li>
             <li>Lore Server実プロセス制御(起動/停止/PID/メモリ) <span class="badge done">完了</span></li>
-            <li>MinIO Docker制御(実装済み・実機未検証) <span class="badge progress">要実機検証</span></li>
-            <li>ノードエディタ風の権限設定UI + ローカル永続化</li>
+            <li>MinIO Docker制御(実Docker環境で動作確認済み) <span class="badge done">完了</span></li>
+            <li>動的ノードエディタ(ディレクトリ/ロールの追加・削除) <span class="badge done">完了</span></li>
             <li>権限グラフの実サーバーApply <span class="badge done">完了</span></li>
           </ul>
         </div>
@@ -654,12 +655,14 @@
         <table class="api">
           <thead><tr><th>Method</th><th>Path</th><th>説明</th></tr></thead>
           <tbody>
-            <tr><td class="method">POST</td><td class="path">/api/auth/login</td><td>ログイン(公開)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/login</td><td>ログイン(公開)・2Cookie発行</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/refresh</td><td>リフレッシュトークンをローテーション(公開)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories</td><td>リポジトリ一覧</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories</td><td>リポジトリ作成</td></tr>
             <tr><td class="method">PATCH</td><td class="path">/api/repositories/{slug}</td><td>rename / description / visibility 更新</td></tr>
             <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(関連PRも削除)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/upload</td><td>画像アップロード(リポジトリ単位分離)</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/lock</td><td>ファイルロック切替</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/stage</td><td>変更をステージ/アンステージ</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴</td></tr>
@@ -805,13 +808,14 @@
       <div class="status-list">
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除)</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・VCS書き込みAPI・access-control Apply</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api / lorehub-web — デュアルトークン認証(アクセス30分+リフレッシュ7日、SSR/CSR両経路で透過的リフレッシュ)</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Fork並み実操作(コミット/ブランチ/ステージング)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア(画像スライダー/3Dトグル)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア(画像スライダー/3Dトグル) + 実画像アップロード</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正</span></div>
-        <div class="status-row"><span class="badge progress">要実機検証</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(コード実装済み、この開発環境にDocker無し)</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — 実バイナリアセットのアップロード/差分生成</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">Server Admin — ノードエディタでのディレクトリ/ロール追加・削除UI</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正 + 動的ノードエディタ</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(実Docker環境で動作確認済み)</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — 画像以外(テキスト/音声/3Dモデル)の実アセットアップロード</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client / Server Admin — リフレッシュトークンの消費(現状30分でセッション切れ)</span></div>
       </div>
     </section>
 
