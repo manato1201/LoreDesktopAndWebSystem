@@ -89,7 +89,7 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | PATCH | `/api/repositories/{slug}` | rename/description/visibility更新 |
 | DELETE | `/api/repositories/{slug}` | リポジトリ削除(関連PRも削除) |
 | GET | `/api/repositories/{slug}/tree` | ファイルツリー |
-| POST | `/api/repositories/{slug}/upload` | 画像ファイルの実バイトをアップロード(リポジトリ単位で分離) |
+| POST | `/api/repositories/{slug}/upload` | 画像/テキスト/音声ファイルの実バイトをアップロード(リポジトリ単位で分離、種別はpathの拡張子から推定) |
 | POST | `/api/repositories/{slug}/tree/lock` | ファイルロック切替 |
 | GET | `/api/repositories/{slug}/content/{*path}` | テキストファイル内容 |
 | GET | `/api/repositories/{slug}/image/{*path}` | 画像プレビュー |

@@ -72,6 +72,14 @@ pub struct AppState {
     /// different repos uploading a file at the same relative path must not
     /// collide, so this is per-repo-keyed from the start.
     pub uploaded_images: HashMap<String, HashMap<String, Vec<u8>>>,
+    /// User-uploaded text file bytes. Same per-repo-keyed shape and same
+    /// reasoning as `uploaded_images` — see there. Routed here from
+    /// `upload_file` based on the uploaded path's extension (see
+    /// `upload_kind_for_path` in handlers.rs).
+    pub uploaded_text: HashMap<String, HashMap<String, Vec<u8>>>,
+    /// User-uploaded audio file bytes. Same per-repo-keyed shape and same
+    /// reasoning as `uploaded_images` — see there.
+    pub uploaded_audio: HashMap<String, HashMap<String, Vec<u8>>>,
     /// Per-repository commit history (oldest first within each vec), keyed
     /// by repository slug.
     pub commits: HashMap<String, Vec<Commit>>,
@@ -771,6 +779,8 @@ pub fn seed() -> AppState {
         image_content_before,
         audio_content,
         uploaded_images: HashMap::new(),
+        uploaded_text: HashMap::new(),
+        uploaded_audio: HashMap::new(),
         commits,
         branches,
         current_branch: HashMap::new(),

@@ -446,6 +446,13 @@ pub async fn get_file_content(
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
+
+    // User-uploaded content takes priority over the fixed demo text dataset —
+    // same fallback structure as `get_image`.
+    if let Some(bytes) = state.uploaded_text.get(&slug).and_then(|m| m.get(&path)) {
+        return ranged_bytes_response(&headers, "text/plain; charset=utf-8", bytes);
+    }
+
     match state.file_contents.get(&path) {
         Some(content) => {
             ranged_bytes_response(&headers, "text/plain; charset=utf-8", content.as_bytes())
@@ -586,6 +593,43 @@ fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
+/// Infers a `Content-Type` for uploaded audio bytes from the path's
+/// extension. Everything that isn't recognizably an MP3 is served as
+/// `audio/wav`, matching the seeded demo audio's format — we don't want to
+/// silently mislabel content-type, but WAV is also the only format the demo
+/// dataset and this app's audio preview otherwise assume.
+fn audio_content_type_for_path(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "mp3" => "audio/mpeg",
+        _ => "audio/wav",
+    }
+}
+
+/// Which of the three per-kind uploaded-content stores (`uploaded_images`/
+/// `uploaded_text`/`uploaded_audio`) an uploaded path belongs in, inferred
+/// from its extension the same way `content_type_for_path` infers a
+/// `Content-Type` for `get_image`. Recognized text/audio extensions route to
+/// their dedicated stores; everything else (including the existing image
+/// extensions and any unrecognized extension) keeps the pre-existing
+/// behavior of landing in `uploaded_images`, so this generalization can't
+/// change what happens to an upload that used to work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadKind {
+    Image,
+    Text,
+    Audio,
+}
+
+fn upload_kind_for_path(path: &str) -> UploadKind {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "txt" | "md" | "json" | "yaml" | "yml" => UploadKind::Text,
+        "wav" | "mp3" => UploadKind::Audio,
+        _ => UploadKind::Image,
+    }
+}
+
 pub async fn get_image(
     State(ctx): State<SharedState>,
     Path((slug, path)): Path<(String, String)>,
@@ -632,11 +676,16 @@ pub struct UploadImageRequest {
 }
 
 /// Stores raw uploaded file bytes for `slug`/`path`, served back afterwards
-/// by `get_image` (see there for the per-repo-keyed lookup and content-type
-/// inference). This is the write side of the Binary Diff Viewer's "Add
-/// File" flow — LoreForge Client base64-encodes a local file and posts it
-/// here, then stages it via the existing `stage_change` endpoint.
-pub async fn upload_image(
+/// by `get_image`/`get_file_content`/`get_audio` (see there for the
+/// per-repo-keyed lookup and content-type inference). This is the write
+/// side of LoreForge Client's "Add File" flow — the client base64-encodes a
+/// local file and posts it here, then stages it via the existing
+/// `stage_change` endpoint. The request body shape doesn't carry an
+/// explicit kind; which of `uploaded_images`/`uploaded_text`/
+/// `uploaded_audio` the bytes land in is inferred from `path`'s extension
+/// via `upload_kind_for_path`, the same way `get_image`'s content-type
+/// inference already works from extension alone.
+pub async fn upload_file(
     State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
     Path(slug): Path<String>,
@@ -662,18 +711,41 @@ pub async fn upload_image(
         return bad_request("uploaded file is empty");
     }
 
-    state
-        .uploaded_images
-        .entry(slug.clone())
-        .or_default()
-        .insert(path.clone(), bytes);
+    let kind = upload_kind_for_path(&path);
+    match kind {
+        UploadKind::Text => {
+            state
+                .uploaded_text
+                .entry(slug.clone())
+                .or_default()
+                .insert(path.clone(), bytes);
+        }
+        UploadKind::Audio => {
+            state
+                .uploaded_audio
+                .entry(slug.clone())
+                .or_default()
+                .insert(path.clone(), bytes);
+        }
+        UploadKind::Image => {
+            state
+                .uploaded_images
+                .entry(slug.clone())
+                .or_default()
+                .insert(path.clone(), bytes);
+        }
+    }
 
     state.record_audit(&user.name, "uploaded", &path);
 
-    let uploaded_images = state.uploaded_images.clone();
+    let (blob_key, blob_value): (&str, HashMap<String, HashMap<String, Vec<u8>>>) = match kind {
+        UploadKind::Text => ("uploaded_text", state.uploaded_text.clone()),
+        UploadKind::Audio => ("uploaded_audio", state.uploaded_audio.clone()),
+        UploadKind::Image => ("uploaded_images", state.uploaded_images.clone()),
+    };
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "uploaded_images", &uploaded_images).await;
+    crate::db::save_blob(&ctx.db, blob_key, &blob_value).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     StatusCode::CREATED.into_response()
@@ -688,6 +760,13 @@ pub async fn get_audio(
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
     }
+
+    // User-uploaded content takes priority over the fixed demo audio clip —
+    // same fallback structure as `get_image`.
+    if let Some(bytes) = state.uploaded_audio.get(&slug).and_then(|m| m.get(&path)) {
+        return ranged_bytes_response(&headers, audio_content_type_for_path(&path), bytes);
+    }
+
     match state.audio_content.get(&path) {
         Some(bytes) => ranged_bytes_response(&headers, "audio/wav", bytes),
         None => not_found("no audio content for this file"),
