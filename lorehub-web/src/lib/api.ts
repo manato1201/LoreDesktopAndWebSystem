@@ -350,6 +350,38 @@ export async function login(
   return { ok: true, user: data.user };
 }
 
+/**
+ * Self-service password rotation for the current user
+ * (`POST /api/auth/change-password`). Uses `fetchWithRefresh` like the other
+ * authenticated helpers so a merely-expired access token gets silently
+ * refreshed and retried rather than being mistaken for "wrong current
+ * password" — both cases would otherwise be indistinguishable 401s.
+ *
+ * Success is `204 No Content` (no JSON body); the server has just
+ * invalidated every session for this account, including the one making this
+ * call, so the caller is expected to redirect to `/login` afterwards rather
+ * than trying to keep using the now-dead session.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await fetchWithRefresh(() =>
+    fetch(`${API_BASE}/api/auth/change-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentPassword, newPassword }),
+      cache: "no-store",
+      credentials: "include",
+    }),
+  );
+  if (res.status === 204) {
+    return { ok: true };
+  }
+  const body = await res.json().catch(() => ({}) as { error?: string });
+  return { ok: false, error: body.error ?? "Could not change password" };
+}
+
 export async function logout(): Promise<void> {
   await fetch(`${API_BASE}/api/auth/logout`, {
     method: "POST",

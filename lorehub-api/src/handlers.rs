@@ -1466,3 +1466,85 @@ pub async fn get_audit_log(State(ctx): State<SharedState>) -> Json<Vec<AuditLogE
     let state = ctx.read().await;
     Json(state.audit_log.clone())
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Minimum acceptable length for a new password set via
+/// `POST /api/auth/change-password`. This project doesn't need a full
+/// password-strength meter, but rejecting a trivially weak password
+/// server-side (not just in the frontend form) is a real control since the
+/// client can't be trusted to enforce it.
+const MIN_PASSWORD_LEN: usize = 8;
+
+/// `POST /api/auth/change-password` — self-service password rotation for the
+/// already-authenticated caller. Unlike `login`, this sits behind
+/// `require_auth`, so `user` is taken from the request extension rather than
+/// a body field — there is no "whose password" question to leak, since a
+/// caller can only ever change their own.
+///
+/// Re-verifying `current_password` here is the actual security control, even
+/// though the request is already authenticated: it protects against a
+/// hijacked-but-still-logged-in session (e.g. someone walking up to an
+/// unlocked laptop) silently taking over the account by setting a new
+/// password only they know.
+///
+/// On success, every session and refresh token belonging to this account is
+/// invalidated — including the caller's own current one, deliberately not
+/// special-cased. If the password is being changed because a credential
+/// leaked, any session an attacker already established (and the caller's own
+/// current tab) must not survive it; the frontend is expected to redirect to
+/// `/login` afterwards.
+pub async fn change_password(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+
+    let Some(hash) = state.credentials.get(&user.email).cloned() else {
+        return unauthorized();
+    };
+    if !auth::verify_password(&body.current_password, &hash) {
+        return unauthorized();
+    }
+
+    if body.new_password.len() < MIN_PASSWORD_LEN {
+        return bad_request(&format!(
+            "new password must be at least {MIN_PASSWORD_LEN} characters"
+        ));
+    }
+    if body.new_password == body.current_password {
+        return bad_request("new password must be different from the current password");
+    }
+
+    let new_hash = auth::hash_password(&body.new_password);
+    state.credentials.insert(user.email.clone(), new_hash);
+
+    // Kill every existing session/refresh token for this account — see the
+    // function doc comment for why this deliberately isn't limited to
+    // "every session except the caller's own".
+    state.sessions.retain(|_, entry| entry.email != user.email);
+    state
+        .refresh_tokens
+        .retain(|_, entry| entry.email != user.email);
+
+    state.record_audit(&user.name, "changed password for", &user.email);
+
+    let credentials = state.credentials.clone();
+    let sessions = state.sessions.clone();
+    let refresh_tokens = state.refresh_tokens.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+
+    crate::db::save_blob(&ctx.db, "credentials", &credentials).await;
+    crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+    crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
