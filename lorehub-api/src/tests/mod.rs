@@ -6,20 +6,39 @@
 //! `main.rs` binds to a TCP listener — no real socket, no shared state
 //! across tests, and critically: never opens `lorehub.db`, the real file
 //! `cargo run` reads/writes (see `test_app` below).
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, Response, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use crate::state::{AppContext, SharedState};
-use crate::{build_router, db, state};
+use crate::{RouterConfig, build_router, db, state};
+
+/// Simulated peer address stamped onto every request built by
+/// [`json_request`]/[`plain_request`] via a `ConnectInfo<SocketAddr>`
+/// extension — `tower_governor`'s `PeerIpKeyExtractor` (used by the login
+/// rate limiter, see `main.rs::build_router`) reads its key from that
+/// extension. In production this is populated by
+/// `into_make_service_with_connect_info` from the real TCP peer; the
+/// in-process `oneshot` requests these tests build never touch a real
+/// socket, so there's no "real" peer address to read — this stands in for
+/// it. Tests that specifically need to simulate *distinct* source IPs (the
+/// rate-limit tests) use [`login_request_from`] to override it.
+pub const DEFAULT_TEST_PEER_ADDR: SocketAddr = SocketAddr::new(
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+    0,
+);
 
 mod access_control;
 mod auth;
 mod authz;
+mod body_limit;
+mod rate_limit;
 mod repositories;
 mod upload_and_range;
 mod vcs;
@@ -44,10 +63,21 @@ pub const OTHER_SEEDED_SLUG: &str = "hollow-keep-env";
 /// `lorehub.db` (opened only by `main()`, never by this helper) is never
 /// touched.
 pub async fn test_app() -> Router {
+    test_app_with_config(RouterConfig::from_env()).await
+}
+
+/// Like [`test_app`], but with an explicit [`RouterConfig`] instead of the
+/// env-derived default — used by tests that need a tiny body-size limit or
+/// a tiny login rate-limit burst so the test runs fast, without mutating
+/// any process-global env var (which would race every other test running
+/// in the same `cargo test` process; see the module docs on
+/// `DEFAULT_TEST_PEER_ADDR` and `RouterConfig` in `main.rs` for why that
+/// matters here).
+pub async fn test_app_with_config(config: RouterConfig) -> Router {
     let pool = db::connect(":memory:").await;
     let seeded = state::seed();
     let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool));
-    build_router(shared_state)
+    build_router(shared_state, config)
 }
 
 /// Drives `req` through `app` via `oneshot` and returns the response.
@@ -79,7 +109,10 @@ pub async fn body_bytes(resp: Response<Body>) -> Vec<u8> {
         .to_vec()
 }
 
-/// Builds a JSON request with an optional `Cookie` header.
+/// Builds a JSON request with an optional `Cookie` header. Carries a
+/// `ConnectInfo<DEFAULT_TEST_PEER_ADDR>` extension so routes behind the
+/// per-IP login rate limiter (`tower_governor`) can extract a key instead of
+/// failing key-extraction outright — see `DEFAULT_TEST_PEER_ADDR`'s docs.
 pub fn json_request(
     method: &str,
     uri: &str,
@@ -93,18 +126,43 @@ pub fn json_request(
     if let Some(c) = cookie {
         builder = builder.header(header::COOKIE, c);
     }
-    builder
+    let mut req = builder
         .body(Body::from(body.to_string()))
-        .expect("build json request")
+        .expect("build json request");
+    req.extensions_mut()
+        .insert(ConnectInfo(DEFAULT_TEST_PEER_ADDR));
+    req
 }
 
-/// Builds a bodyless request (GET/DELETE/etc.) with an optional `Cookie` header.
+/// Builds a bodyless request (GET/DELETE/etc.) with an optional `Cookie`
+/// header. See [`json_request`] for why a `ConnectInfo` extension is
+/// stamped on by default.
 pub fn plain_request(method: &str, uri: &str, cookie: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(c) = cookie {
         builder = builder.header(header::COOKIE, c);
     }
-    builder.body(Body::empty()).expect("build plain request")
+    let mut req = builder.body(Body::empty()).expect("build plain request");
+    req.extensions_mut()
+        .insert(ConnectInfo(DEFAULT_TEST_PEER_ADDR));
+    req
+}
+
+/// Builds a `POST /api/auth/login` request for `email` (password is always
+/// `"lorehub"` for seeded accounts) carrying an explicit simulated peer
+/// address, overriding [`json_request`]'s default `ConnectInfo`. Used by the
+/// login rate-limit tests to simulate multiple distinct source IPs against
+/// the same in-process router — there's no real TCP peer in an in-process
+/// `oneshot` request, so this is the only way to vary "source IP" at all.
+pub fn login_request_from(email: &str, addr: SocketAddr) -> Request<Body> {
+    let mut req = json_request(
+        "POST",
+        "/api/auth/login",
+        None,
+        serde_json::json!({ "email": email, "password": DEMO_PASSWORD }),
+    );
+    req.extensions_mut().insert(ConnectInfo(addr));
+    req
 }
 
 /// Every individual `Set-Cookie` header value on a response, in order.

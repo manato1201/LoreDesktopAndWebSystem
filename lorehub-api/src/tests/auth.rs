@@ -25,6 +25,32 @@ async fn login_success_sets_two_distinct_cookies_with_correct_max_ages() {
     assert_eq!(cookie_max_age(&refresh), REFRESH_TOKEN_TTL_SECS);
 }
 
+/// Confirms the real login flow wires `auth::session_cookie`/
+/// `refresh_cookie` up to actually include `Secure` when
+/// `LOREHUB_INSECURE_COOKIES` is unset (the default). This deliberately
+/// does NOT try to also exercise the opt-out (`LOREHUB_INSECURE_COOKIES=true`)
+/// path here: that flag is read once into a process-wide `OnceLock` (see
+/// `auth::cookies_secure`), so a test that set the env var would race every
+/// other test in this binary that also builds a cookie — effectively all of
+/// them, via the `login` helper. The opt-out path is covered instead by a
+/// narrower unit test of the pure cookie-string builder in `auth.rs`
+/// (`cookie_string_omits_secure_when_not_requested`), which takes the
+/// `secure` flag as a plain argument and never touches the env var at all.
+#[tokio::test]
+async fn login_cookies_are_secure_by_default() {
+    let app = test_app().await;
+    let (_combined, access, refresh) = login(&app, DEMO_EMAIL).await;
+
+    assert!(
+        access.contains("; Secure"),
+        "access cookie should carry Secure by default: {access}"
+    );
+    assert!(
+        refresh.contains("; Secure"),
+        "refresh cookie should carry Secure by default: {refresh}"
+    );
+}
+
 #[tokio::test]
 async fn login_wrong_password_is_401() {
     let app = test_app().await;
