@@ -139,6 +139,14 @@ signals:
     void textErrorChanged();
 
 private:
+    // Testability accommodation: applyTreeJson()/applyPendingJson() are the
+    // pure data-transformation entry points (JSON in, model state out) that
+    // QTest exercises directly instead of going through a live network
+    // round-trip (loadRepository()/stageChange() etc. stay untested here —
+    // those are integration-level concerns already covered by lorehub-api's
+    // own test suite). See tests/tst_repositorytreemodel.cpp.
+    friend class RepositoryTreeModelTest;
+
     struct FlatRow
     {
         QString path;

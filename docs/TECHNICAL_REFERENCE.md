@@ -198,4 +198,4 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 - LoreForge ClientのVCS操作はlorehub-apiへの直接書き込みで完結しており、`push`と`commit`の区別がない(ローカル/リモートの分離が存在しないため — 詳細はARCHITECTURE_AND_DESIGN.md §3.2)。
 - LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。同じ理由でアセットアップロードも3Dモデルは対象外(反映先が存在しないため)。
 - `kv_store` 方式は将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。
-- LoreForge Client/Server Admin(Qt/QML C++アプリ)には自動テストが無い。`lorehub-api`/`lorehub-web`には整備済み(§2参照)だが、Qt Testの導入は意図的に別タスクとして切り出し中。
+- LoreForge Client/Server AdminにもQt Testによる単体テストを導入済み(`loreforge-client/tests/tst_repositorytreemodel.cpp`、`loreforge-server-admin/tests/tst_permissionconfigcontroller.cpp`)。GUI操作の自動化(`SendInput`等)はこのサンドボックスでは信頼できないため対象外とし、`RepositoryTreeModel`のツリー構築/Sparse Workspace Managerのinclude/exclude/cascade-exclude/ステージ管理、`PermissionConfigController`のJSON永続化ラウンドトリップなど、GUI非依存の純粋なモデル/コントローラロジックのみを対象にしている。各`CMakeLists.txt`に`enable_testing()`と`LoreForgeClientTests`/`LoreForgeServerAdminTests`ターゲットを追加し、`main.cpp`を除いた対象`.cpp`をテスト実行ファイルへ直接コンパイル(`QTEST_GUILESS_MAIN`が独自の`main()`を提供)。`ctest`(各`build/`ディレクトリ内)で実行できる。
