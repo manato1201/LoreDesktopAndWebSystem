@@ -247,6 +247,14 @@ pub struct OrgMember {
     pub initials: String,
     pub email: String,
     pub role: MemberRole,
+    /// Team names this member belongs to — matched against
+    /// `AccessEntry.principal` when `principal_type == Team` during
+    /// path-permission resolution (see `authz::check_path_permission`).
+    /// `#[serde(default)]` so an old persisted `org_members` blob (saved
+    /// before this field existed) still deserializes cleanly, with every
+    /// pre-existing member simply getting no teams.
+    #[serde(default)]
+    pub teams: Vec<String>,
     pub joined_at: String,
 }
 
