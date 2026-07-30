@@ -19,6 +19,7 @@ use crate::{build_router, db, state};
 
 mod access_control;
 mod auth;
+mod authz;
 mod repositories;
 mod upload_and_range;
 mod vcs;
