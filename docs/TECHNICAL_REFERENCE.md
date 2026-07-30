@@ -49,6 +49,7 @@ Lint/検証:
 ```bash
 cargo fmt
 cargo clippy
+cargo test    # 統合テスト39件。各テストが独立した sqlite://:memory: を使うため実DBには触れない
 ```
 
 ### 2.2 lorehub-web (Next.js)
@@ -59,6 +60,7 @@ npm install
 npm run dev      # http://localhost:3000 (Turbopack)
 npm run lint      # eslint
 npm run build      # 本番ビルド + 型チェック
+npm run test       # Vitest。unit test 22件(node環境、jsdom不要)
 ```
 
 環境変数 `NEXT_PUBLIC_API_URL` 未設定時は `http://localhost:4000` にフォールバック(`src/lib/api.ts`)。
@@ -91,10 +93,10 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | GET | `/api/repositories/{slug}/tree` | ファイルツリー |
 | POST | `/api/repositories/{slug}/upload` | 画像/テキスト/音声ファイルの実バイトをアップロード(リポジトリ単位で分離、種別はpathの拡張子から推定) |
 | POST | `/api/repositories/{slug}/tree/lock` | ファイルロック切替 |
-| GET | `/api/repositories/{slug}/content/{*path}` | テキストファイル内容 |
-| GET | `/api/repositories/{slug}/image/{*path}` | 画像プレビュー |
+| GET | `/api/repositories/{slug}/content/{*path}` | テキストファイル内容(`text/plain`直返し、HTTP Range対応) |
+| GET | `/api/repositories/{slug}/image/{*path}` | 画像プレビュー(HTTP Range対応) |
 | GET | `/api/repositories/{slug}/image-before/{*path}` | 画像Before(diff用) |
-| GET | `/api/repositories/{slug}/audio/{*path}` | 音声プレビュー(WAV) |
+| GET | `/api/repositories/{slug}/audio/{*path}` | 音声プレビュー(WAV、HTTP Range対応) |
 | GET | `/api/repositories/{slug}/commits` | コミット履歴(ブランチ情報込み) |
 | POST | `/api/repositories/{slug}/commits` | ステージ済み変更からコミット作成 |
 | GET | `/api/repositories/{slug}/commits/{hash}` | コミット詳細 |
@@ -145,6 +147,15 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 
 body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換ではなくパスごとのマージ**(insert-or-overwrite) — リクエストボディに含まれないパスの既存データは一切変更しない。監査ログに `"applied access control configuration from Server Admin"` を1エントリ記録。Server Adminのノードエディタからのapplyで使用。
 
+### 3.5 アップロードの種別推定とHTTP Range対応
+
+`POST .../upload` は body `{ "path": "...", "contentBase64": "..." }` を受け取り、`path` の拡張子から種別を推定して `uploaded_images`/`uploaded_text`/`uploaded_audio`(いずれも `HashMap<slug, HashMap<path, Vec<u8>>>`、リポジトリ単位で分離)のいずれかへ保存する(`.txt`/`.md`/`.json`/`.yaml`/`.yml` → text、`.wav`/`.mp3` → audio、それ以外 → image)。3Dモデルは意図的に対象外(§7参照)。
+
+`get_image`/`get_image_before`/`get_audio`/`get_file_content` は共通の `ranged_bytes_response` ヘルパーを通り、`Range: bytes=<start>-<end>` リクエストヘッダを解釈する:
+- ヘッダ無し → `200 OK`、全量を返す(`Accept-Ranges: bytes` を追加)
+- 充足可能な範囲 → `206 Partial Content` + `Content-Range: bytes <start>-<end>/<total>`
+- 範囲外 → `416 Range Not Satisfiable` + `Content-Range: bytes */<total>`
+
 ## 4. 認証・セッションの実装詳細
 
 - パスワードは argon2 でハッシュ化。デモアカウントは全員パスワード `"lorehub"` 共通(`state.rs` コメント参照)。
@@ -153,7 +164,8 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 - `POST /api/auth/refresh` はリフレッシュトークンを検証し、**ローテーション**(古いリフレッシュトークンを破棄し新しいアクセス+リフレッシュ両方を再発行)する。古いリフレッシュトークンの再利用は401になる(盗用されたトークンの使い回しを防ぐ標準的な対策)。
 - Cookieは `localhost` ドメインに対して発行されるため、ポートが異なる `localhost:3000`(Web) と `localhost:4000`(API) の両方に自動送信される(ブラウザのCookieはホスト単位でありポート単位ではない)。
 - Next.jsのServer Componentはブラウザとは別プロセスなのでCookieジャーを持たない。`src/lib/auth-server.ts` の `getSessionCookieHeader()` が `next/headers` の `cookies()` から手動で取得し、API呼び出し時にヘッダとして転送する。
-- **透過的リフレッシュ(lorehub-webのみ)**: CSR(ブラウザからの直接fetch)は `src/lib/api.ts` の `fetchWithRefresh` が401を検知して1回だけ `/api/auth/refresh` を叩きリトライする。SSR(Server Component)はCookieを書き換えられないため、`src/proxy.ts`(このNext.jsバージョンで `middleware.ts` から改名された規約 — `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` 参照)がレンダリング前にアクセスCookie欠落を検知して先回りでリフレッシュする。LoreForge Client/Server Adminはこのリフレッシュを消費しないため、30分でセッションが切れたら再ログインが必要。
+- **透過的リフレッシュ(lorehub-web)**: CSR(ブラウザからの直接fetch)は `src/lib/api.ts` の `fetchWithRefresh` が401を検知して1回だけ `/api/auth/refresh` を叩きリトライする(同時に複数リクエストが401した場合もリフレッシュ呼び出しは1回に共有され、リトライも無限ループしない)。SSR(Server Component)はCookieを書き換えられないため、`src/proxy.ts`(このNext.jsバージョンで `middleware.ts` から改名された規約 — `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` 参照)がレンダリング前にアクセスCookie欠落を検知して先回りでリフレッシュする。
+- **プロアクティブリフレッシュ(LoreForge Client / Server Admin)**: `AuthController`(Client)と `PermissionConfigController`(Server Admin)はどちらもログイン成功時に `QTimer`(25分間隔、定数 `kRefreshIntervalMs`)を起動し、30分のアクセストークンTTLより先に `POST /api/auth/refresh` を送る。リフレッシュトークンは共有 `QNetworkAccessManager` のCookie jarに既に保持されているため、追加の配線は不要。リフレッシュが失敗した場合(リフレッシュトークン自体の失効・サーバーダウン)はタイマーを止めてログアウト/未接続状態へ遷移する。個々のリクエストへ401リトライを後付けするより単純で、デスクトップアプリのセッションライフサイクルに適した設計として意図的に選択(Web版のリアクティブ方式とは異なる)。
 
 ## 5. 永続化: kv_store 方式
 
@@ -184,9 +196,6 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 ## 7. 既知の制約 / 今後の課題
 
 - LoreForge ClientのVCS操作はlorehub-apiへの直接書き込みで完結しており、`push`と`commit`の区別がない(ローカル/リモートの分離が存在しないため — 詳細はARCHITECTURE_AND_DESIGN.md §3.2)。
-- LoreForge Server AdminのMinIO Docker制御(`DockerController`)は実Docker環境で動作確認済み(コンテナ起動・ポートマッピング・`docker stats`によるCPU/メモリ取得・停止)。
-- LoreForge Client/Server Adminはリフレッシュトークンを消費しない。アクセストークンの30分TTLでセッションが切れた場合は再ログインが必要(lorehub-webのみSSR/CSR両経路で透過的に自動リフレッシュする)。
-- LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。
-- Server Adminのノードエディタはディレクトリ/ロールの追加・削除UIが無く、既定の5+3ノード構成が前提。
-- 認証は単一セッショントークン方式で、リフレッシュトークンやトークン失効APIは未実装。
+- LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。同じ理由でアセットアップロードも3Dモデルは対象外(反映先が存在しないため)。
 - `kv_store` 方式は将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。
+- LoreForge Client/Server Admin(Qt/QML C++アプリ)には自動テストが無い。`lorehub-api`/`lorehub-web`には整備済み(§2参照)だが、Qt Testの導入は意図的に別タスクとして切り出し中。
