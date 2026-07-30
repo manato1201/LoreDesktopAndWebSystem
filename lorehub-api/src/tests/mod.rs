@@ -38,6 +38,7 @@ mod access_control;
 mod auth;
 mod authz;
 mod body_limit;
+mod change_password;
 mod rate_limit;
 mod repositories;
 mod upload_and_range;
