@@ -64,7 +64,8 @@ graph TB
 - **フロントエンド**: Next.js 16 (App Router, Server Components), TypeScript, Tailwind CSS v4
 - **バックエンド**: Rust (Axum), tokio, sqlx(SQLite), argon2, tower-http CORS
 - **主要画面**: リポジトリ一覧 / ツリー閲覧 / ファイル詳細(画像・音声・3Dプレビュー) / コミット履歴(ブランチグラフ) / PR差分レビュー / アクセス制御 / 組織設定 / **リポジトリ設定(rename・削除)**
-- **認証**: HttpOnlyセッションCookie。Server Componentは `next/headers` の `cookies()` からCookieを読み取りAPIへ転送(`auth-server.ts`)。Client Componentは `credentials: "include"` でブラウザが自動送信。
+- **認証**: HttpOnlyセッションCookie(アクセス+リフレッシュのデュアルトークン)。Server Componentは `next/headers` の `cookies()` からCookieを読み取りAPIへ転送(`auth-server.ts`)。Client Componentは `credentials: "include"` でブラウザが自動送信。トークン失効時はCSR/SSR両経路で透過的に自動リフレッシュ(§4.2参照)。
+- **プレビューの実配信**: `StreamingPreview.tsx` は当初「700msの偽プログレスバー」で本物のチャンク配信を模していたが、`fetch().body.getReader()` で実バイト受信量に基づく進捗表示に置き換え、バックエンドも本物のHTTP Range(`206 Partial Content`/`416`)に対応済み(§4.3参照)。
 
 ### 3.2 LoreForge Client (Desktop)
 
@@ -77,8 +78,10 @@ graph TB
   - **Fork並みの実操作**: ファイルのステージング(Added/Modified/Deleted)、コミット作成、ブランチ作成/切替、Pull(明示的な再フェッチ)
   - **バイナリDiffビューア**: 画像Before/Afterスライダー(`LoreImageProvider` による認証付き非同期画像取得)、3Dモデルの視覚的Diffトグル(スタイライズされたワイヤーフレーム代替表現)
   - **Sparse Workspace Manager**: ディレクトリ単位でワークスペースに含める/含めないを選択、`QSettings` でリポジトリごとに永続化。除外時は配下の選択も連鎖的に解除
-  - **実画像アップロード**: ローカルの画像ファイルを選んでlorehub-apiへアップロードし、実バイトを保存(リポジトリ単位で分離)。成功時に自動でAdded扱いとしてステージング
-- **今後**: 画像以外(テキスト/音声/3Dモデル)のアセットアップロード、リフレッシュトークンの消費(現状はアクセストークンの30分TTLでセッション切れ)
+  - **実アセットアップロード**: 画像/テキスト/音声ファイルをローカルから選んでlorehub-apiへアップロードし、実バイトを保存(リポジトリ単位で分離、種別はパスの拡張子から推定)。成功時に自動でAdded扱いとしてステージング。3Dモデルは意図的に対象外(Web/Client双方に実ジオメトリを読み込む仕組みが無く、アップロードしても反映先が無いため)
+  - **テキスト/音声プレビュー**: テキストファイルは `Flickable` + 読み取り専用 `TextEdit` でスクロール可能表示。音声は `AudioPlayerController`(`QMediaPlayer` + 認証付き非同期フェッチ)で実再生・シーク対応
+  - **セッション自動延長**: `AuthController` が25分ごとに `POST /api/auth/refresh` を送信し、30分のアクセストークンTTLより先にセッションを更新(§4.2参照)
+- **今後**: なし(Fork並みの実操作・プレビュー・アップロード・セッション延長まで一通り完了)
 
 ### 3.3 LoreForge Server Admin (Desktop)
 
@@ -90,7 +93,8 @@ graph TB
   - MinIODocker制御(`docker run`/`stop`/`ps`/`stats`、CPU/RAM表示)— 実Docker環境で動作確認済み
   - **動的ノードエディタ**: ディレクトリ/ロールノードを自由に追加・削除可能(既定の5+3ノード構成は初期値であり上限ではない)。ノード削除時は関連する接続も連鎖的に除去、`QSettings`ではなくJSON設定ファイルへ永続化
   - **権限グラフのApply**: ログインしてlorehub-apiへ `PUT /api/access-control/entries` を送信し、ノードエディタの権限グラフを実サーバーへ反映(パスごとのマージ、対象外パスは無傷)。動的追加したノードでも同じパイプラインで動作確認済み
-- **今後**: リフレッシュトークンの消費(現状はアクセストークンの30分TTLでセッション切れ→再ログインが必要)
+  - **セッション自動延長**: `PermissionConfigController` も同じく25分ごとに `POST /api/auth/refresh`(Client側と全く同じパターン、Apply機能のログインセッションを維持)
+- **今後**: Qt Test基盤の整備(lorehub-api/lorehub-webには自動テストスイートを追加済みだが、2つのデスクトップアプリは未整備。意図的に別タスクとして切り出し中)
 
 ## 4. データフロー: 認証シーケンス
 
@@ -138,6 +142,32 @@ sequenceDiagram
 ```
 
 **設計判断**: `PUT` は全置換ではなく「グラフに含まれるパスだけを上書きし、それ以外は触らない」マージ方式。Server Adminの既定グラフ(5ディレクトリ)がlorehub-apiのデモ全パスを網羅していないため、全置換だと未対応パスのデモデータが消えてしまう。
+
+### 4.2 セッションのリフレッシュ
+
+アクセストークンは30分でサーバー側が失効させる。放置すると全リクエストが401になるため、クライアントごとに異なる復旧経路を持つ。
+
+```mermaid
+flowchart LR
+    subgraph Web["lorehub-web"]
+        CSR["CSR: fetchWithRefresh<br/>401検知→refresh→1回だけ再試行"]
+        SSR["SSR: proxy.ts<br/>アクセスCookie欠落を検知→先回りrefresh"]
+    end
+    subgraph Desktop["Client / Server Admin"]
+        Timer["QTimer: 25分ごとに<br/>POST /api/auth/refresh"]
+    end
+    API["lorehub-api<br/>POST /api/auth/refresh<br/>(ローテーション)"]
+
+    CSR --> API
+    SSR --> API
+    Timer --> API
+```
+
+Web(CSR/SSR)は「失効を検知してから直す」リアクティブ方式、デスクトップアプリ(Client/Server Admin)は「失効前に定期更新する」プロアクティブ方式 — 個々のリクエストへの401リトライをQNetworkReplyベースの全呼び出し箇所に後付けするより、単純なタイマーの方がデスクトップアプリのセッションライフサイクルには適切と判断した。リフレッシュ失敗時(リフレッシュトークン自体の失効やサーバーダウン)はタイマーを止めてログアウト状態に遷移し、ゾンビタイマーが失敗し続けることを防ぐ。
+
+### 4.3 バイナリプレビューの実配信(HTTP Range)
+
+`get_image`/`get_image_before`/`get_audio`/`get_file_content` はいずれも `Range: bytes=<start>-<end>` リクエストヘッダを解釈し、`206 Partial Content`(`Content-Range`/`Accept-Ranges`付き)または範囲外なら `416 Range Not Satisfiable` を返す。`Range`ヘッダが無い場合は従来通り全量を `200` で返す(`Accept-Ranges: bytes` を追加で広告)。`get_file_content` はこの変更に合わせ `{"content": "..."}` のJSON包装をやめ、生の `text/plain; charset=utf-8` バイト列を直接返すよう変更した(JSONドキュメントの一部だけを切り出しても意味が無いため)。
 
 ## 5. データモデル (AppState)
 
@@ -224,6 +254,7 @@ timeline
     Phase 5 デスクトップアプリ着手 : LoreForge Client雛形+ログイン : ファイルツリー+ロック操作 : Server Admin雛形+権限ノードエディタ
     Phase 6 GitHubレベル機能拡張 : リポジトリ設定(rename/削除) : Client コミット履歴表示(並行作業) : Server Admin 権限設定永続化(並行作業)
     Phase 7 アーキテクチャギャップの解消 : Client Fork並み実操作(commit/branch/stage) : Server Admin実プロセス制御(Lore Server) : タブ視認性修正 : 権限グラフのApply連携 : Clientバイナリdiffビューア : Sparse Workspace Manager
+    Phase 8 残課題の完全消化 : Server Adminノードエディタ動的化 : MinIO実機検証 : リフレッシュトークン基盤 : Clientテキスト/音声プレビュー : Web実チャンクストリーミング : 自動テストスイート(lorehub-api/web) : Clientテキスト/音声アップロード : デスクトップ側セッション自動延長
 ```
 
 ## 9. マルチエージェント並行開発
@@ -260,11 +291,20 @@ flowchart TD
 
 この過程で、報告だけでは分からない実環境の変化(Visual Studioのインストールパスが `2022` フォルダから `18` フォルダへ自動更新されていた事実)や、検証手法そのものの欠陥(QMLの `console.log` がリダイレクトされたログファイルへ確実にフラッシュされない問題、複雑な画面遷移を伴うTimerチェーンより単機能の検証用QMLを直接ロードする方が確実、という教訓)を発見した。**「動きました」という報告と、実際に動くことは別物**という前提に立ち、毎回一次証拠(実プロセスのPID、実HTTPレスポンス、レジストリの値そのもの)を自分で取得することを徹底した。
 
+### 9.2 自動テストスイート
+
+Phase 8で、これまで一切存在しなかった自動テストを `lorehub-api` と `lorehub-web` に整備した(2つのQtデスクトップアプリのテスト基盤は意図的に別タスクとして切り出し中)。
+
+- **lorehub-api**: `tower::ServiceExt::oneshot` で実際の `Router` をTCPバインド無しにin-processで駆動する統合テスト、39件。各テストが独立した `sqlite://:memory:` DBと `state::seed()` を持ち、実DBファイルには一切触れない(`cargo test`並列実行下でのテスト間汚染を防ぐ設計)。認証(ログイン/リフレッシュローテーション/失効)・リポジトリCRUD・VCS書き込みフロー・アクセス制御マージ・アップロードのリポジトリ単位分離(過去のバグクラスの回帰テスト)・HTTP Range(206/416)をカバー。
+- **lorehub-web**: Vitestを新規導入(node環境、DOM操作なしのため jsdom不要)、22件。`fetchWithRefresh` の401リトライロジック(無限ループしないこと・同時失敗時のリフレッシュ共有まで含む)、`proxy.ts` のCookie合成ヘルパー、`AudioPlayer` の時刻フォーマットをカバー。
+
+**独立再検証で確認**: `cargo test`/`npm run test` とも全件パスをクリーンビルドから再現、テストが実DBファイル(`lorehub.db`)を作成しないことも確認済み。
+
 ## 10. 現在の状態(このドキュメント作成時点)
 
-- ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)まで完了、lint/build検証済み
-- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応、**アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証**
-- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**実画像ファイルのアップロード→自動ステージング**、Sparse Workspace Managerまで完備
-- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、**ノードエディタでのディレクトリ/ロールの動的追加・削除**、タブ視認性修正まで完備。**MinIOのDocker制御を実際のDocker環境で検証済み**(コンテナ起動・ポートマッピング・`docker stats`によるCPU/メモリ取得・停止まで実機確認)
-- ✅ lorehub-web: SSR経路(Proxy = このNext.jsバージョンでの`middleware.ts`改名後の名称)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応
-- ⏳ 未着手: LoreForge Clientでの画像以外(テキスト/音声/3Dモデル)の実アセットアップロード対応、LoreForge Client/Server Adminでのリフレッシュトークン消費(現状は30分でセッション切れ→再ログインが必要)
+- ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)・**実チャンクストリーミング(HTTP Range)** まで完了、lint/build/test検証済み
+- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応、アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証、**HTTP Range配信**、**統合テスト39件**
+- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**テキスト/音声プレビュー**、**画像/テキスト/音声の実アセットアップロード→自動ステージング**、Sparse Workspace Manager、**セッション自動延長(25分ごとのプロアクティブrefresh)**まで完備
+- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、ノードエディタでのディレクトリ/ロールの動的追加・削除、タブ視認性修正、MinIOのDocker制御(実機検証済み)、**セッション自動延長**まで完備
+- ✅ lorehub-web: SSR経路(`proxy.ts`)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応、**Vitestによる自動テスト22件**
+- ⏳ 未着手: LoreForge Client/Server AdminのQt Test自動テスト基盤整備、Clientでの3Dモデルアセットアップロード(実ジオメトリローダーが存在しないため意図的に対象外)
