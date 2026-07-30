@@ -532,7 +532,9 @@
             <li>コミット履歴(横型ブランチグラフ)</li>
             <li>PR差分レビュー・コメント</li>
             <li>アクセス制御・組織設定</li>
-            <li><strong>リポジトリ設定(rename・削除)</strong></li>
+            <li>リポジトリ設定(rename・削除)</li>
+            <li>実チャンクストリーミング(HTTP Range) <span class="badge done">完了</span></li>
+            <li>デュアルトークン認証(CSR/SSR透過的リフレッシュ) <span class="badge done">完了</span></li>
           </ul>
         </div>
         <div class="card comp-card">
@@ -543,9 +545,10 @@
             <li>ファイルツリー + ロック/アンロック</li>
             <li>コミット履歴ビュー(ブランチ別カラー)</li>
             <li>Fork並みの実操作 — ステージング/コミット/ブランチ作成・切替/Pull <span class="badge done">完了</span></li>
-            <li>バイナリDiffビューア — 画像スライダー/3Dモデルトグル <span class="badge done">完了</span></li>
-            <li>実画像アップロード→自動ステージング <span class="badge done">完了</span></li>
+            <li>バイナリDiffビューア + テキスト/音声プレビュー <span class="badge done">完了</span></li>
+            <li>画像/テキスト/音声アップロード→自動ステージング <span class="badge done">完了</span></li>
             <li>Sparse Workspace Manager <span class="badge done">完了</span></li>
+            <li>セッション自動延長(25分ごとのプロアクティブrefresh) <span class="badge done">完了</span></li>
           </ul>
         </div>
         <div class="card comp-card">
@@ -557,6 +560,7 @@
             <li>MinIO Docker制御(実Docker環境で動作確認済み) <span class="badge done">完了</span></li>
             <li>動的ノードエディタ(ディレクトリ/ロールの追加・削除) <span class="badge done">完了</span></li>
             <li>権限グラフの実サーバーApply <span class="badge done">完了</span></li>
+            <li>セッション自動延長(25分ごとのプロアクティブrefresh) <span class="badge done">完了</span></li>
           </ul>
         </div>
       </div>
@@ -650,7 +654,7 @@
     <section id="api">
       <div class="eyebrow">07 / Reference</div>
       <h2>主要APIエンドポイント</h2>
-      <p class="lede"><code>POST /api/auth/login</code> 以外は全て認証必須(<code>require_auth</code>ミドルウェア)。完全な一覧は技術資料を参照。</p>
+      <p class="lede"><code>POST /api/auth/login</code>/<code>refresh</code> 以外は全て認証必須(<code>require_auth</code>ミドルウェア)。画像/音声/テキストの各GETはHTTP Range対応(206/416)。完全な一覧は技術資料を参照。</p>
       <div class="card" style="overflow-x:auto;">
         <table class="api">
           <thead><tr><th>Method</th><th>Path</th><th>説明</th></tr></thead>
@@ -662,7 +666,7 @@
             <tr><td class="method">PATCH</td><td class="path">/api/repositories/{slug}</td><td>rename / description / visibility 更新</td></tr>
             <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(関連PRも削除)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー</td></tr>
-            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/upload</td><td>画像アップロード(リポジトリ単位分離)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/upload</td><td>画像/テキスト/音声アップロード(拡張子で種別推定、リポジトリ単位分離)</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/lock</td><td>ファイルロック切替</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/stage</td><td>変更をステージ/アンステージ</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴</td></tr>
@@ -735,10 +739,15 @@
             <div class="t">GitHubレベル機能拡張</div>
             <ul><li>リポジトリ設定</li><li>Client コミット履歴</li><li>Server Admin 権限永続化</li></ul>
           </div>
-          <div class="phase current">
+          <div class="phase">
             <div class="n">Phase 7</div>
-            <div class="t">アーキテクチャギャップの解消(現在)</div>
+            <div class="t">アーキテクチャギャップの解消</div>
             <ul><li>Client Fork並み実操作</li><li>Server Admin実プロセス制御</li><li>権限グラフApply連携</li><li>バイナリDiffビューア</li><li>Sparse Workspace</li></ul>
+          </div>
+          <div class="phase current">
+            <div class="n">Phase 8</div>
+            <div class="t">残課題の完全消化(現在)</div>
+            <ul><li>ノードエディタ動的化</li><li>MinIO実機検証</li><li>デュアルトークン認証</li><li>テキスト/音声プレビュー・アップロード</li><li>実チャンクストリーミング</li><li>自動テスト39+22件</li><li>デスクトップ側セッション自動延長</li></ul>
           </div>
         </div>
       </div>
@@ -806,16 +815,16 @@
       <div class="eyebrow">12 / Now</div>
       <h2>現在の状態</h2>
       <div class="status-list">
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・VCS書き込みAPI・access-control Apply</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除) + 実チャンクストリーミング(HTTP Range)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・VCS書き込みAPI・access-control Apply・統合テスト39件</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api / lorehub-web — デュアルトークン認証(アクセス30分+リフレッシュ7日、SSR/CSR両経路で透過的リフレッシュ)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-web — Vitestによる自動テスト22件</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Fork並み実操作(コミット/ブランチ/ステージング)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア(画像スライダー/3Dトグル) + 実画像アップロード</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正 + 動的ノードエディタ</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア + テキスト/音声プレビュー + 画像/テキスト/音声アップロード</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager + セッション自動延長</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正 + 動的ノードエディタ + セッション自動延長</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(実Docker環境で動作確認済み)</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client — 画像以外(テキスト/音声/3Dモデル)の実アセットアップロード</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client / Server Admin — リフレッシュトークンの消費(現状30分でセッション切れ)</span></div>
+        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client / Server Admin — Qt Test自動テスト基盤(意図的に別タスクとして切り出し)</span></div>
       </div>
     </section>
 
