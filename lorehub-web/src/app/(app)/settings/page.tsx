@@ -1,4 +1,5 @@
 import { AuditLogList } from "@/components/AuditLogList";
+import { ChangePasswordForm } from "@/components/ChangePasswordForm";
 import { MembersTable } from "@/components/MembersTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StorageUsageCard } from "@/components/StorageUsageCard";
@@ -20,6 +21,13 @@ export default async function SettingsPage() {
       <PageHeader title="Organization Settings" subtitle="Nebula Studios" />
 
       <div className="flex flex-col gap-8">
+        <section>
+          <h2 className="mb-3 text-sm font-semibold text-text-secondary">
+            Account
+          </h2>
+          <ChangePasswordForm />
+        </section>
+
         <section>
           <h2 className="mb-3 text-sm font-semibold text-text-secondary">
             Members

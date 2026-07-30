@@ -145,6 +145,7 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(handlers::logout))
         .route("/api/auth/me", get(handlers::me))
+        .route("/api/auth/change-password", post(handlers::change_password))
         .route(
             "/api/repositories",
             get(handlers::list_repositories).post(handlers::create_repository),
