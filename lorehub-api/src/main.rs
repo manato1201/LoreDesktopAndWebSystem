@@ -9,23 +9,103 @@ mod state;
 mod tests;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{get, patch, post};
 use axum::{Router, middleware};
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::CorsLayer;
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-/// Builds the full `Router` (public + protected routes, CORS, tracing) bound
-/// to `shared_state`. Factored out of `main` so integration tests
+const DEFAULT_CORS_ORIGIN: &str = "http://localhost:3000";
+
+/// 48 MiB. Uploads (`POST /api/repositories/{slug}/upload`) carry file
+/// content as base64 inside the JSON body, so raw bytes are ~33% smaller
+/// than this — see `docs/TECHNICAL_REFERENCE.md` §2.1 ("アップロードのボディ
+/// サイズ上限に関する既知の制約") for why that encoding is itself a
+/// pre-existing limitation for large binary assets, independent of this cap.
+const DEFAULT_MAX_BODY_BYTES: usize = 48 * 1024 * 1024;
+
+/// Allows a burst of `DEFAULT_LOGIN_RATE_LIMIT_BURST` login attempts per
+/// source IP, then refills one attempt every `DEFAULT_LOGIN_RATE_LIMIT_PERIOD`
+/// — i.e. a real user mistyping their password a handful of times in a row
+/// is unaffected, while sustained credential-stuffing against one IP is
+/// throttled hard. See `RouterConfig::from_env` / `build_router` for where
+/// this is wired to `POST /api/auth/login` specifically.
+const DEFAULT_LOGIN_RATE_LIMIT_BURST: u32 = 8;
+const DEFAULT_LOGIN_RATE_LIMIT_PERIOD: Duration = Duration::from_secs(60);
+
+/// Runtime configuration for [`build_router`] — everything here is either
+/// read from an env var at startup (`RouterConfig::from_env`, used by
+/// `main`) or constructed directly with explicit values (used by tests that
+/// need a tiny body limit or a tiny rate-limit burst without mutating
+/// process-global env vars, which would race other tests in the same
+/// binary).
+pub struct RouterConfig {
+    pub cors_origin: HeaderValue,
+    pub max_body_bytes: usize,
+    pub login_rate_limit_burst: u32,
+    pub login_rate_limit_period: Duration,
+}
+
+impl RouterConfig {
+    /// Reads `LOREHUB_WEB_ORIGIN` and `LOREHUB_MAX_BODY_BYTES`, falling back
+    /// to the documented defaults when unset. A value that IS set but fails
+    /// to parse is a startup-time config error (panics with a clear
+    /// message) rather than a silent fallback — see `resolve_cors_origin`/
+    /// `resolve_max_body_bytes`.
+    pub fn from_env() -> Self {
+        Self {
+            cors_origin: resolve_cors_origin(std::env::var("LOREHUB_WEB_ORIGIN").ok()),
+            max_body_bytes: resolve_max_body_bytes(std::env::var("LOREHUB_MAX_BODY_BYTES").ok()),
+            login_rate_limit_burst: DEFAULT_LOGIN_RATE_LIMIT_BURST,
+            login_rate_limit_period: DEFAULT_LOGIN_RATE_LIMIT_PERIOD,
+        }
+    }
+}
+
+/// `raw` is `Some(..)` iff `LOREHUB_WEB_ORIGIN` was explicitly set. Takes an
+/// `Option<String>` rather than reading the env var itself so it can be
+/// unit-tested with explicit inputs instead of mutating process-global env
+/// state.
+fn resolve_cors_origin(raw: Option<String>) -> HeaderValue {
+    let origin = raw.unwrap_or_else(|| DEFAULT_CORS_ORIGIN.to_string());
+    origin.parse::<HeaderValue>().unwrap_or_else(|err| {
+        panic!(
+            "LOREHUB_WEB_ORIGIN is set to {origin:?}, which is not a valid HTTP header value: {err}"
+        )
+    })
+}
+
+/// See [`resolve_cors_origin`] for why this takes an `Option<String>`
+/// instead of reading the env var directly.
+fn resolve_max_body_bytes(raw: Option<String>) -> usize {
+    match raw {
+        None => DEFAULT_MAX_BODY_BYTES,
+        Some(raw) => raw.parse::<usize>().unwrap_or_else(|err| {
+            panic!(
+                "LOREHUB_MAX_BODY_BYTES is set to {raw:?}, which is not a valid non-negative integer: {err}"
+            )
+        }),
+    }
+}
+
+/// Builds the full `Router` (public + protected routes, CORS, tracing,
+/// body-size limit, login rate limiting) bound to `shared_state` and
+/// configured by `config`. Factored out of `main` so integration tests
 /// (`src/tests/`) can drive the exact same routing/middleware stack via
 /// `tower::ServiceExt::oneshot` against an isolated, in-memory-backed
 /// `SharedState` instead of a real TCP listener.
-pub fn build_router(shared_state: state::SharedState) -> Router {
-    // Dev-only CORS scoped to the Next.js dev server. `allow_credentials`
-    // requires an explicit origin (no `Any`) per the CORS spec.
+pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> Router {
+    // CORS origin is configurable via `LOREHUB_WEB_ORIGIN` (see
+    // `RouterConfig::from_env`); defaults to the Next.js dev server.
+    // `allow_credentials` requires an explicit origin (no `Any`) per the
+    // CORS spec.
     let cors = CorsLayer::new()
-        .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
+        .allow_origin(config.cors_origin)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -37,13 +117,27 @@ pub fn build_router(shared_state: state::SharedState) -> Router {
         .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true);
 
+    // Per-source-IP rate limiting on login specifically — not per-email,
+    // since a per-email limiter would let an attacker lock a legitimate
+    // user out just by spamming failed attempts against their address.
+    // Requires the request to carry a `ConnectInfo<SocketAddr>` extension;
+    // `main` wires that up via `into_make_service_with_connect_info`, and
+    // tests insert it directly on the requests they build (see
+    // `src/tests/mod.rs`).
+    let login_rate_limit = GovernorConfigBuilder::default()
+        .period(config.login_rate_limit_period)
+        .burst_size(config.login_rate_limit_burst)
+        .finish()
+        .expect("login rate limit: burst_size and period must both be non-zero");
+    let login_route = Router::new()
+        .route("/api/auth/login", post(handlers::login))
+        .layer(GovernorLayer::new(login_rate_limit));
+
     // `/api/auth/refresh` must stay public (no `require_auth` layer) — its
     // entire purpose is recovering from an *expired* access token, so it
     // can't itself require a valid one. It authenticates via the separate
     // refresh-token cookie instead (see handlers::refresh).
-    let public_routes = Router::new()
-        .route("/api/auth/login", post(handlers::login))
-        .route("/api/auth/refresh", post(handlers::refresh));
+    let public_routes = login_route.route("/api/auth/refresh", post(handlers::refresh));
 
     // Everything else requires a valid session, including plain reads —
     // lorehub-web forwards the session cookie from Server Components (see
@@ -141,6 +235,12 @@ pub fn build_router(shared_state: state::SharedState) -> Router {
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+        // Global request body size cap (configurable via
+        // `LOREHUB_MAX_BODY_BYTES`) — without this, a client can send an
+        // arbitrarily large JSON body (e.g. a base64-encoded upload) and
+        // exhaust server memory. Returns `413 Payload Too Large` for
+        // anything over the limit.
+        .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
         .with_state(shared_state)
 }
 
@@ -163,12 +263,23 @@ async fn main() {
     };
 
     let shared_state: state::SharedState = Arc::new(state::AppContext::new(initial_state, pool));
-    let app = build_router(shared_state);
+    let app = build_router(shared_state, RouterConfig::from_env());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4000")
         .await
         .expect("failed to bind to 127.0.0.1:4000");
 
     tracing::info!("lorehub-api listening on http://127.0.0.1:4000");
-    axum::serve(listener, app).await.expect("server error");
+    // `into_make_service_with_connect_info` populates a `ConnectInfo<SocketAddr>`
+    // extension on every incoming request with the real peer address — the
+    // per-IP login rate limiter (see `build_router`) reads it via
+    // `tower_governor`'s `PeerIpKeyExtractor`. Plain `axum::serve(listener, app)`
+    // (the previous setup) never wired this, so the server couldn't see
+    // client IPs at all.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

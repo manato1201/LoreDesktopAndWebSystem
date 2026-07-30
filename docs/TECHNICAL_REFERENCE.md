@@ -49,8 +49,26 @@ Lint/検証:
 ```bash
 cargo fmt
 cargo clippy
-cargo test    # 統合テスト39件。各テストが独立した sqlite://:memory: を使うため実DBには触れない
+cargo test    # 統合テスト59件。各テストが独立した sqlite://:memory: を使うため実DBには触れない
 ```
+
+#### 環境変数(セキュリティ関連、公開デプロイ向け)
+
+| 変数 | デフォルト | 説明 |
+|---|---|---|
+| `LOREHUB_INSECURE_COOKIES` | 未設定(=`false`) | `true`/`1` を明示的に設定した場合のみ、発行する4種のCookie(`session_cookie`/`refresh_cookie`/`cleared_session_cookie`/`cleared_refresh_cookie`、`src/auth.rs`)から `Secure` 属性を外す。**未設定時はデフォルトで安全側**(`Secure` 属性つき)に倒す設計 — 明示的なopt-outを忘れてもセキュアな挙動になる。**ローカルで `cargo run` を `http://localhost:4000` (平文HTTP)のまま使う場合はこの変数が必須**: ブラウザは非HTTPSレスポンスで発行された `Secure` Cookieを保存しないため、これを設定し忘れるとログイン自体は`200`を返すのにCookieがブラウザに保存されず、以降のリクエストが常に401になる(症状だけ見るとログインが壊れているように見える罠なので注意)。 |
+| `LOREHUB_WEB_ORIGIN` | `http://localhost:3000` | CORSの `Access-Control-Allow-Origin` に使う単一オリジン(`allow_credentials(true)` のためワイルドカード不可)。値を明示的に設定したのに `HeaderValue` としてパースできない場合は起動時に `panic`(起動時設定ミスとして扱い、黙ってデフォルトにフォールバックしない)。 |
+| `LOREHUB_MAX_BODY_BYTES` | `50331648`(48MiB) | `tower_http::limit::RequestBodyLimitLayer` に渡すリクエストボディの上限バイト数。超過時は `413 Payload Too Large`。 |
+
+`LOREHUB_INSECURE_COOKIES=true cargo run` のようにインライン指定するか、`.env`相当の仕組みでシェルにexportしてから起動する。
+
+#### ログインのレート制限
+
+`POST /api/auth/login` は送信元IPアドレス単位(メールアドレス単位ではない — メール単位だと攻撃者が正規ユーザーのメールアドレスへ故意に失敗リクエストを送りつけてアカウントをロックできてしまう)でレート制限される(`tower_governor` クレート、`main.rs::build_router` の `login_route`)。デフォルトはバースト8回、以降60秒に1回のペースで補充(`RouterConfig::from_env` のデフォルト値、環境変数化はしていない)。超過時は `429 Too Many Requests`。サーバーが送信元IPを見るためには `axum::serve` を `into_make_service_with_connect_info::<SocketAddr>()` 経由で起動する必要がある(素の `axum::serve(listener, app)` では `ConnectInfo` が配線されず機能しない)。
+
+#### アップロードのボディサイズ上限に関する既知の制約
+
+`POST /api/repositories/{slug}/upload` はファイル実体をbase64文字列としてJSONボディに埋め込む方式(§3.5参照)であり、base64のオーバーヘッドによりエンコード後のボディサイズは生バイト数の約1.33倍になる。`LOREHUB_MAX_BODY_BYTES` のデフォルト48MiBは生データ換算で約36MiBに相当する。この方式は `ARCHITECTURE.md` が本来想定する「数十GBの巨大バイナリアセット」(チャンク分割 + MinIO格納 + Chunk-based Streaming Viewer、`ARCHITECTURE.md` の該当節参照)のシナリオには構造的に不向きである — 今回追加した上限はその根本的な設計上の制約を隠さず可視化するものであり、この制約自体を解消するには実際のチャンク/マルチパート/ストリーミングアップロード経路の導入が必要(本タスクのスコープ外、既知の課題として残す)。
 
 ### 2.2 lorehub-web (Next.js)
 
@@ -64,6 +82,8 @@ npm run test       # Vitest。unit test 22件(node環境、jsdom不要)
 ```
 
 環境変数 `NEXT_PUBLIC_API_URL` 未設定時は `http://localhost:4000` にフォールバック(`src/lib/api.ts`)。
+
+`lorehub-api` 側を素の `cargo run`(平文HTTP、環境変数未設定)で動かしている場合、`lorehub-web` からのログインが一見成功したように見えて実際にはCookieが保存されずセッションが維持されない(ブラウザが非HTTPS応答の `Secure` Cookieを保存しないため)。この場合は `lorehub-api` 起動時に `LOREHUB_INSECURE_COOKIES=true` を設定すること(§2.1参照、`lorehub-web` 側に対応する環境変数は無い)。
 
 ### 2.3 loreforge-client / loreforge-server-admin (Qt6/C++20, Windows/MSVC)
 
