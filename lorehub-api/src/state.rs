@@ -665,6 +665,10 @@ pub fn seed() -> AppState {
             initials: "AT".into(),
             email: "aiko.tanaka@nebula.studio".into(),
             role: MemberRole::Owner,
+            // Owner bypasses path ACL checks entirely (see
+            // authz::check_path_permission), so this isn't load-bearing for
+            // authorization — included for data realism only.
+            teams: vec!["Engineering".into()],
             joined_at: "Jan 2023".into(),
         },
         OrgMember {
@@ -672,6 +676,9 @@ pub fn seed() -> AppState {
             initials: "MS".into(),
             email: "marco.silva@nebula.studio".into(),
             role: MemberRole::Admin,
+            // Admin also bypasses path ACL checks entirely — team membership
+            // here is data realism only, not a security dependency.
+            teams: vec!["Environment Artists".into()],
             joined_at: "Mar 2023".into(),
         },
         OrgMember {
@@ -679,6 +686,11 @@ pub fn seed() -> AppState {
             initials: "PD".into(),
             email: "priya.desai@nebula.studio".into(),
             role: MemberRole::Member,
+            // Matches the "Character Artists" team principal already used by
+            // the seeded `access_entries` on "Assets"/"Assets/Characters" —
+            // this is what makes those demo ACL entries actually mean
+            // something once path checks are enforced.
+            teams: vec!["Character Artists".into()],
             joined_at: "Aug 2023".into(),
         },
         OrgMember {
@@ -686,6 +698,9 @@ pub fn seed() -> AppState {
             initials: "DF".into(),
             email: "diego.fernandez@nebula.studio".into(),
             role: MemberRole::Member,
+            // Matches the "QA Contractors" team principal on "Assets"/
+            // "Source" (read-only) — same reasoning as Priya above.
+            teams: vec!["QA Contractors".into()],
             joined_at: "Nov 2024".into(),
         },
     ];

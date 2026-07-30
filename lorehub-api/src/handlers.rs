@@ -34,6 +34,69 @@ fn bad_request(message: &str) -> Response {
         .into_response()
 }
 
+fn forbidden(message: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
+}
+
+/// `PermissionLevel` -> the verb used in audit-log denial messages
+/// ("denied {verb} access to ...") and the forbidden-response body.
+fn permission_verb(level: PermissionLevel) -> &'static str {
+    match level {
+        PermissionLevel::Read => "read",
+        PermissionLevel::Write => "write",
+        PermissionLevel::Lock => "lock",
+    }
+}
+
+/// Records a denied-access audit entry and returns the `403 Forbidden`
+/// response for a path-based ACL check (`authz::check_path_permission`)
+/// that failed. Visibility into denied attempts is itself a
+/// security-relevant feature, so every ACL denial is logged the same way a
+/// successful mutation would be — just with a "denied ..." action instead.
+async fn deny_path_access(
+    ctx: &SharedState,
+    user: &OrgMember,
+    level: PermissionLevel,
+    path: &str,
+) -> Response {
+    let verb = permission_verb(level);
+    let mut state = ctx.write().await;
+    state.record_audit(&user.name, &format!("denied {verb} access to"), path);
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+    forbidden(&format!("insufficient permissions ({verb}) for this path"))
+}
+
+/// Records a denied-access audit entry and returns the `403 Forbidden`
+/// response for a role-gated (RBAC) action that a `Member`-role caller
+/// attempted. See [`deny_path_access`] for why denials are audited too.
+async fn deny_role_action(
+    ctx: &SharedState,
+    user: &OrgMember,
+    action: &str,
+    target: &str,
+) -> Response {
+    let mut state = ctx.write().await;
+    state.record_audit(&user.name, &format!("denied {action}"), target);
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+    forbidden("requires Owner or Admin role")
+}
+
+/// `true` iff `user`'s role is `Owner` or `Admin` — the RBAC bar for the
+/// org-level actions in Part 3 of the authorization work (delete repo,
+/// change another member's role, apply an access-control graph). A `Member`
+/// never passes this regardless of team membership.
+fn is_owner_or_admin(user: &OrgMember) -> bool {
+    matches!(user.role, MemberRole::Owner | MemberRole::Admin)
+}
+
 /// Resolves the session cookie to the authenticated `OrgMember` and inserts
 /// it into request extensions so downstream handlers can pull it out via
 /// `Extension<OrgMember>` instead of re-checking the session themselves.
@@ -413,6 +476,10 @@ pub async fn delete_repository(
     axum::Extension(user): axum::Extension<OrgMember>,
     Path(slug): Path<String>,
 ) -> Response {
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "delete repository", &slug).await;
+    }
+
     let mut state = ctx.write().await;
     let before = state.repositories.len();
     state.repositories.retain(|r| r.slug != slug);
@@ -439,12 +506,17 @@ pub async fn delete_repository(
 
 pub async fn get_file_content(
     State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
 
     // User-uploaded content takes priority over the fixed demo text dataset —
@@ -632,12 +704,17 @@ fn upload_kind_for_path(path: &str) -> UploadKind {
 
 pub async fn get_image(
     State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
 
     // User-uploaded content takes priority over the fixed demo SVGs — an
@@ -655,12 +732,17 @@ pub async fn get_image(
 
 pub async fn get_image_before(
     State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
     match state.image_content_before.get(&path) {
         Some(svg) => ranged_bytes_response(&headers, "image/svg+xml", svg.as_bytes()),
@@ -701,6 +783,10 @@ pub async fn upload_file(
     let path = body.path.trim().to_string();
     if path.is_empty() {
         return bad_request("path is required");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Write) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Write, &path).await;
     }
 
     let bytes = match base64::engine::general_purpose::STANDARD.decode(&body.content_base64) {
@@ -753,12 +839,17 @@ pub async fn upload_file(
 
 pub async fn get_audio(
     State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let state = ctx.read().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
 
     // User-uploaded content takes priority over the fixed demo audio clip —
@@ -797,6 +888,11 @@ pub async fn toggle_lock(
     let mut state = ctx.write().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(&state, &user, &slug, &body.path, PermissionLevel::Lock)
+    {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Lock, &body.path).await;
     }
 
     let locked_by = if body.lock {
@@ -1022,6 +1118,16 @@ pub async fn stage_change(
     let mut state = ctx.write().await;
     if !state.repositories.iter().any(|r| r.slug == slug) {
         return not_found("repository not found");
+    }
+    if !crate::authz::check_path_permission(
+        &state,
+        &user,
+        &slug,
+        &body.path,
+        PermissionLevel::Write,
+    ) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Write, &body.path).await;
     }
 
     let entries = state.pending_changes.entry(slug.clone()).or_default();
@@ -1276,6 +1382,18 @@ pub async fn apply_access_entries(
     axum::Extension(user): axum::Extension<OrgMember>,
     Json(body): Json<HashMap<String, Vec<AccessEntry>>>,
 ) -> Response {
+    if !is_owner_or_admin(&user) {
+        let mut denied_paths: Vec<String> = body.keys().cloned().collect();
+        denied_paths.sort();
+        return deny_role_action(
+            &ctx,
+            &user,
+            "apply access control configuration",
+            &denied_paths.join(", "),
+        )
+        .await;
+    }
+
     let mut state = ctx.write().await;
     let mut applied_paths: Vec<String> = body.keys().cloned().collect();
     applied_paths.sort();
@@ -1314,6 +1432,13 @@ pub async fn update_member_role(
     Path(email): Path<String>,
     Json(body): Json<RoleUpdateRequest>,
 ) -> Response {
+    // "Caller must be Owner or Admin, full stop" — deliberately not
+    // conditioned on which `email` is being changed (not even the caller's
+    // own), so there's no path by which a `Member` can self-escalate.
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "change member role for", &email).await;
+    }
+
     let mut state = ctx.write().await;
     let Some(member) = state.org_members.iter_mut().find(|m| m.email == email) else {
         return not_found("member not found");
