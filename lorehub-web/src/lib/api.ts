@@ -15,7 +15,26 @@ import type {
   TreeNode,
 } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+/**
+ * `NEXT_PUBLIC_API_URL` is inlined into the client bundle at build time and
+ * is what the browser uses — correct for CSR fetches, but when this module
+ * runs server-side (Server Components, Route Handlers) inside a container
+ * (see docker-compose.yml), "the browser-reachable address" and "the
+ * address this process can actually reach" are two different things: the
+ * browser gets there via a published host port, while this same process
+ * needs the Docker-internal service address. `API_INTERNAL_URL` (a plain,
+ * non-`NEXT_PUBLIC_` env var — read live at container start, not baked into
+ * any bundle) lets an operator override the server-side address without
+ * needing a second image build; it's `undefined` in local (non-Docker) dev,
+ * where both "the browser" and "this process" mean the same host and
+ * `NEXT_PUBLIC_API_URL` is already correct for both.
+ */
+const API_BASE =
+  typeof window === "undefined"
+    ? (process.env.API_INTERNAL_URL ??
+      process.env.NEXT_PUBLIC_API_URL ??
+      "http://localhost:4000")
+    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
 
 /**
  * Client-side 401 recovery. When a browser-driven request comes back 401

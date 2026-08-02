@@ -163,6 +163,7 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
     // isn't separately rate-limited — the token is the secret, and
     // brute-forcing a 192-bit random token isn't practical.
     let public_routes = login_route
+        .route("/api/health", get(handlers::health))
         .route("/api/auth/refresh", post(handlers::refresh))
         .route("/api/auth/accept-invite", post(handlers::accept_invite))
         .route("/api/auth/invite/{token}", get(handlers::get_invite))
@@ -305,11 +306,20 @@ async fn main() {
     ));
     let app = build_router(shared_state, RouterConfig::from_env());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:4000")
+    // `0.0.0.0`, not `127.0.0.1`: a loopback-only bind is unreachable from
+    // outside its own network namespace, which is invisible in local `cargo
+    // run` (host loopback already covers "this machine") but breaks
+    // completely under Docker — the container's host-published port and any
+    // other compose service reach it via the container's non-loopback
+    // interface, not its 127.0.0.1 (see docker-compose.yml / Dockerfile).
+    // The actual access boundary is CORS + session auth, not the bind
+    // address; a real public deployment additionally sits behind a reverse
+    // proxy (see docs/DEPLOYMENT.md), same as any other server.
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:4000")
         .await
-        .expect("failed to bind to 127.0.0.1:4000");
+        .expect("failed to bind to 0.0.0.0:4000");
 
-    tracing::info!("lorehub-api listening on http://127.0.0.1:4000");
+    tracing::info!("lorehub-api listening on http://0.0.0.0:4000");
     // `into_make_service_with_connect_info` populates a `ConnectInfo<SocketAddr>`
     // extension on every incoming request with the real peer address — the
     // per-IP login rate limiter (see `build_router`) reads it via
