@@ -41,6 +41,7 @@ mod body_limit;
 mod change_password;
 mod health;
 mod invites;
+mod metrics;
 mod password_reset;
 mod rate_limit;
 mod repositories;
