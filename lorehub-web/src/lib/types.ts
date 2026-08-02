@@ -117,6 +117,21 @@ export type OrgMember = {
   joinedAt: string;
 };
 
+export type InvitePreview = {
+  email: string;
+  name: string;
+  role: MemberRole;
+};
+
+export type PendingInvite = {
+  email: string;
+  name: string;
+  role: MemberRole;
+  teams: string[];
+  invitedBy: string;
+  expiresAt: number;
+};
+
 export type AuditLogEntry = {
   id: string;
   actor: string;
