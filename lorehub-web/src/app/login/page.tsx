@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { login } from "@/lib/api";
 
@@ -62,6 +63,13 @@ export default function LoginPage() {
             className="rounded-standard bg-surface-interactive px-3 py-2 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-accent"
           />
         </label>
+
+        <Link
+          href="/forgot-password"
+          className="text-xs text-text-secondary underline"
+        >
+          Forgot password?
+        </Link>
 
         {error && <p className="text-xs text-negative">{error}</p>}
 
