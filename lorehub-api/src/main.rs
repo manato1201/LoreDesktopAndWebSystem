@@ -1,6 +1,7 @@
 mod auth;
 mod authz;
 mod db;
+mod email;
 mod handlers;
 mod image_assets;
 mod models;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::{HeaderValue, Method, header};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Router, middleware};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -133,11 +134,40 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
         .route("/api/auth/login", post(handlers::login))
         .layer(GovernorLayer::new(login_rate_limit));
 
+    // A second, independent rate limiter (own `GovernorConfigBuilder`, own
+    // governor instance/state — deliberately not shared with `login_route`'s)
+    // scoped to `POST /api/auth/forgot-password` alone. Without this, an
+    // attacker could email-bomb a victim's inbox with reset links by hitting
+    // this endpoint repeatedly; the limit is on source IP just like login's,
+    // for the same reason (a per-email limiter would let an attacker lock a
+    // victim out of *requesting* their own reset).
+    let forgot_password_rate_limit = GovernorConfigBuilder::default()
+        .period(config.login_rate_limit_period)
+        .burst_size(config.login_rate_limit_burst)
+        .finish()
+        .expect("forgot-password rate limit: burst_size and period must both be non-zero");
+    let forgot_password_route = Router::new()
+        .route("/api/auth/forgot-password", post(handlers::forgot_password))
+        .layer(GovernorLayer::new(forgot_password_rate_limit));
+
     // `/api/auth/refresh` must stay public (no `require_auth` layer) — its
     // entire purpose is recovering from an *expired* access token, so it
     // can't itself require a valid one. It authenticates via the separate
     // refresh-token cookie instead (see handlers::refresh).
-    let public_routes = login_route.route("/api/auth/refresh", post(handlers::refresh));
+    //
+    // `/api/auth/accept-invite`, `/api/auth/invite/{token}`, and
+    // `/api/auth/reset-password` are public for the same underlying reason as
+    // each other: the caller doesn't have a session yet (accept-invite/
+    // invite-preview) or is deliberately proving identity via a one-time
+    // token instead of a session (reset-password). `reset-password` itself
+    // isn't separately rate-limited — the token is the secret, and
+    // brute-forcing a 192-bit random token isn't practical.
+    let public_routes = login_route
+        .route("/api/auth/refresh", post(handlers::refresh))
+        .route("/api/auth/accept-invite", post(handlers::accept_invite))
+        .route("/api/auth/invite/{token}", get(handlers::get_invite))
+        .route("/api/auth/reset-password", post(handlers::reset_password))
+        .merge(forgot_password_route);
 
     // Everything else requires a valid session, including plain reads —
     // lorehub-web forwards the session cookie from Server Components (see
@@ -225,6 +255,11 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
             "/api/org/members/{email}",
             patch(handlers::update_member_role),
         )
+        .route(
+            "/api/org/invites",
+            get(handlers::list_invites).post(handlers::create_invite),
+        )
+        .route("/api/org/invites/{email}", delete(handlers::revoke_invite))
         .route("/api/org/storage", get(handlers::get_storage))
         .route("/api/org/audit-log", get(handlers::get_audit_log))
         .layer(middleware::from_fn_with_state(
@@ -263,7 +298,11 @@ async fn main() {
         }
     };
 
-    let shared_state: state::SharedState = Arc::new(state::AppContext::new(initial_state, pool));
+    let shared_state: state::SharedState = Arc::new(state::AppContext::new(
+        initial_state,
+        pool,
+        email::SmtpConfig::from_env(),
+    ));
     let app = build_router(shared_state, RouterConfig::from_env());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:4000")
