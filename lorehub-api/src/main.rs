@@ -9,17 +9,20 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{delete, get, patch, post};
 use axum::{Router, middleware};
+use axum_prometheus::PrometheusMetricLayer;
+use axum_prometheus::metrics_exporter_prometheus::PrometheusHandle;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 const DEFAULT_CORS_ORIGIN: &str = "http://localhost:3000";
 
@@ -94,6 +97,62 @@ fn resolve_max_body_bytes(raw: Option<String>) -> usize {
     }
 }
 
+/// Returns the process-wide (metrics-recording tower `Layer`, Prometheus
+/// scrape `Handle`) pair used to wire up `GET /metrics` (see
+/// `build_router`).
+///
+/// This is built exactly once per process (via `OnceLock`) and cloned into
+/// every `build_router` call, rather than calling
+/// `PrometheusMetricLayer::pair()` fresh each time, because that function
+/// installs a **process-global** metrics recorder under the hood
+/// (`metrics::set_global_recorder`) — which can only succeed once per
+/// process and panics on a second call. `build_router` runs far more than
+/// once per process: every integration test builds its own independent
+/// router via `test_app()` (see `src/tests/mod.rs`), so calling
+/// `PrometheusMetricLayer::pair()` directly inside `build_router` would
+/// panic on the second test that ran. Both `PrometheusMetricLayer` and
+/// `PrometheusHandle` are cheap `Clone`s (they share the same underlying
+/// registry via an internal `Arc`), so this is safe to call repeatedly.
+///
+/// One accepted consequence: because the recorder is process-global, every
+/// router built in the same test binary — across unrelated tests — records
+/// into and can read back from the *same* Prometheus registry. Metric
+/// counts are therefore not isolated per test; `src/tests/metrics.rs`
+/// asserts a count is "at least 1" after a request, not an exact value, for
+/// this reason.
+fn metrics_layer_and_handle() -> (PrometheusMetricLayer<'static>, PrometheusHandle) {
+    static PAIR: OnceLock<(PrometheusMetricLayer<'static>, PrometheusHandle)> = OnceLock::new();
+    PAIR.get_or_init(PrometheusMetricLayer::pair).clone()
+}
+
+/// How `main` configures `tracing_subscriber::fmt`'s output. `Pretty` is the
+/// existing human-readable default (good for a developer watching a
+/// terminal); `Json` emits one JSON object per log line, needed for a real
+/// log aggregator (Loki, CloudWatch, etc. — see `docs/DEPLOYMENT.md`) to
+/// parse fields out of a line instead of scraping free-form text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    Pretty,
+    Json,
+}
+
+/// `raw` is `Some(..)` iff `LOREHUB_LOG_FORMAT` was explicitly set. See
+/// [`resolve_cors_origin`] for why this takes an `Option<String>` instead of
+/// reading the env var directly. Matching is case-insensitive so
+/// `LOREHUB_LOG_FORMAT=JSON` and `=json` behave identically.
+fn resolve_log_format(raw: Option<String>) -> LogFormat {
+    match raw {
+        None => LogFormat::Pretty,
+        Some(raw) => match raw.to_ascii_lowercase().as_str() {
+            "pretty" => LogFormat::Pretty,
+            "json" => LogFormat::Json,
+            _ => panic!(
+                "LOREHUB_LOG_FORMAT is set to {raw:?}, which is not a recognized log format (expected \"pretty\" or \"json\")"
+            ),
+        },
+    }
+}
+
 /// Builds the full `Router` (public + protected routes, CORS, tracing,
 /// body-size limit, login rate limiting) bound to `shared_state` and
 /// configured by `config`. Factored out of `main` so integration tests
@@ -162,8 +221,27 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
     // token instead of a session (reset-password). `reset-password` itself
     // isn't separately rate-limited — the token is the secret, and
     // brute-forcing a 192-bit random token isn't practical.
+    // `(prometheus_layer, metric_handle)` — see `metrics_layer_and_handle`
+    // for why this is a shared, lazily-initialized-once pair rather than a
+    // fresh `PrometheusMetricLayer::pair()` call here. `metric_handle` is
+    // moved into the `/metrics` handler closure below; `prometheus_layer` is
+    // applied further down alongside the other cross-cutting layers.
+    let (prometheus_layer, metric_handle) = metrics_layer_and_handle();
+
     let public_routes = login_route
         .route("/api/health", get(handlers::health))
+        // Deliberately NOT under `/api` — this matches the path Prometheus
+        // operators' scrape configs conventionally expect for an exporter
+        // endpoint (see `docs/DEPLOYMENT.md`'s Observability section). No
+        // auth and no rate limiting: a Prometheus scraper doesn't carry a
+        // session cookie and polls on its own fixed interval, so gating
+        // either would just break scraping. `/metrics` is unauthenticated,
+        // so operators must not expose it publicly without a reverse-proxy
+        // rule restricting it (also called out in `docs/DEPLOYMENT.md`).
+        .route(
+            "/metrics",
+            get(move || async move { metric_handle.render() }),
+        )
         .route("/api/auth/refresh", post(handlers::refresh))
         .route("/api/auth/accept-invite", post(handlers::accept_invite))
         .route("/api/auth/invite/{token}", get(handlers::get_invite))
@@ -270,7 +348,39 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
 
     public_routes
         .merge(protected_routes)
-        .layer(TraceLayer::new_for_http())
+        // `tower_http`'s `TraceLayer` defaults to logging request/response
+        // spans at DEBUG level, which — combined with `main`'s
+        // `tracing_subscriber::fmt::init()` defaulting to INFO when
+        // `RUST_LOG` is unset — meant NO per-request log line was ever
+        // actually emitted (confirmed by directly observing a running
+        // Docker container: only the two startup INFO lines ever appeared,
+        // nothing per-request, even under real traffic).
+        //
+        // Fixing just `on_request`/`on_response`'s own level to INFO isn't
+        // enough on its own: the *span* those events are nested in (built
+        // by `DefaultMakeSpan`, which carries the `method`/`uri` fields)
+        // defaults to DEBUG too, so at a global INFO level that span is
+        // never actually recorded — verified locally by watching real
+        // `cargo run` stdout, where doing only the `on_request`/
+        // `on_response` part produced lines with status/latency but no
+        // method or path at all. Raising `DefaultMakeSpan`'s level to INFO
+        // as well is what actually gets method/path into the log. The
+        // result: one INFO line in with method+path
+        // (`DefaultOnRequest`) and one INFO line out with status+latency
+        // (`DefaultOnResponse`), method/path present on both via the now-
+        // recorded parent span — the "method, path, status, latency"
+        // access log an operator needs.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_request(DefaultOnRequest::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
+        // Prometheus request-count/latency instrumentation for every route
+        // that flows through this router, including 404s and rejections
+        // from the layers below (CORS, body limit) — see
+        // `metrics_layer_and_handle` and the `/metrics` route above.
+        .layer(prometheus_layer)
         .layer(cors)
         // Global request body size cap (configurable via
         // `LOREHUB_MAX_BODY_BYTES`) — without this, a client can send an
@@ -283,7 +393,15 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // `LOREHUB_LOG_FORMAT=json` switches to one-JSON-object-per-line output
+    // for real log-aggregator ingestion (Loki, CloudWatch, etc. — see
+    // `docs/DEPLOYMENT.md`); unset (or `pretty`) keeps the existing
+    // human-readable formatter, which is what local `cargo run` development
+    // wants. See `resolve_log_format` for the exact accepted values.
+    match resolve_log_format(std::env::var("LOREHUB_LOG_FORMAT").ok()) {
+        LogFormat::Pretty => tracing_subscriber::fmt::init(),
+        LogFormat::Json => tracing_subscriber::fmt().json().init(),
+    }
 
     let pool = db::connect("lorehub.db").await;
     let initial_state = match db::load_state(&pool).await {
@@ -332,4 +450,55 @@ async fn main() {
     )
     .await
     .expect("server error");
+}
+
+/// Unit tests for the pure `resolve_*` config-parsing functions above.
+/// These take an `Option<String>` instead of reading process env vars
+/// specifically so they can be tested with explicit inputs like this,
+/// without mutating (and racing other tests over) real process-global env
+/// state — see `resolve_cors_origin`'s doc comment. `resolve_cors_origin`/
+/// `resolve_max_body_bytes` predate this module and aren't covered here;
+/// this only covers `resolve_log_format`, added alongside it.
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn log_format_defaults_to_pretty_when_unset() {
+        assert_eq!(resolve_log_format(None), LogFormat::Pretty);
+    }
+
+    #[test]
+    fn log_format_json_is_case_insensitive() {
+        assert_eq!(
+            resolve_log_format(Some("json".to_string())),
+            LogFormat::Json
+        );
+        assert_eq!(
+            resolve_log_format(Some("JSON".to_string())),
+            LogFormat::Json
+        );
+        assert_eq!(
+            resolve_log_format(Some("Json".to_string())),
+            LogFormat::Json
+        );
+    }
+
+    #[test]
+    fn log_format_pretty_is_case_insensitive() {
+        assert_eq!(
+            resolve_log_format(Some("pretty".to_string())),
+            LogFormat::Pretty
+        );
+        assert_eq!(
+            resolve_log_format(Some("PRETTY".to_string())),
+            LogFormat::Pretty
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a recognized log format")]
+    fn log_format_rejects_an_unrecognized_explicit_value() {
+        resolve_log_format(Some("yaml".to_string()));
+    }
 }
