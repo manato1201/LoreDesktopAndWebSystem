@@ -39,6 +39,7 @@ mod auth;
 mod authz;
 mod body_limit;
 mod change_password;
+mod health;
 mod invites;
 mod password_reset;
 mod rate_limit;

@@ -3,3 +3,7 @@
 *.db-journal
 *.db-shm
 *.db-wal
+
+# env files (real secrets) — .env.example stays tracked as the template
+.env
+!.env.example
