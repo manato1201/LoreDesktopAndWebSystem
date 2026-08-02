@@ -1,0 +1,85 @@
+services:
+  lorehub-api:
+    build:
+      context: ./lorehub-api
+    # `lorehub-api` opens its SQLite file via a bare relative filename
+    # (`db::connect("lorehub.db")` in main.rs), which the Dockerfile places
+    # at `/data` via `WORKDIR /data`. Mounting a named volume there is what
+    # makes the database survive `docker compose down` / container
+    # recreation — see docs/DEPLOYMENT.md's backup section.
+    volumes:
+      - lorehub-db:/data
+    environment:
+      # This is the browser-reachable address of lorehub-web, used for CORS
+      # (see main.rs::build_router). A person running `docker compose up`
+      # opens lorehub-web at http://localhost:3000 in their own browser, so
+      # that — not the Docker-internal service name — is what the browser's
+      # `Origin` header will actually carry. Same reasoning as
+      # `NEXT_PUBLIC_API_URL` below.
+      LOREHUB_WEB_ORIGIN: ${LOREHUB_WEB_ORIGIN:-http://localhost:3000}
+    # SMTP and cookie-security settings are optional and read from a
+    # top-level `.env` (via env_file below) rather than declared here with
+    # `${VAR:-default}` interpolation — LOREHUB_SMTP_HOST in particular must
+    # stay genuinely *unset* (not set to an empty string) when no relay is
+    # configured, since lorehub-api's `SmtpConfig::from_env` distinguishes
+    # "unset" from "set to empty" (see lorehub-api/src/email.rs). Leaving
+    # these lines commented out in `.env` means they're simply absent from
+    # the container's environment, which is what "no SMTP relay configured"
+    # actually requires.
+    #
+    # See lorehub-api/.env.example for the full list and what each one does:
+    #   LOREHUB_MAX_BODY_BYTES, LOREHUB_INSECURE_COOKIES,
+    #   LOREHUB_SMTP_HOST, LOREHUB_SMTP_PORT, LOREHUB_SMTP_USERNAME,
+    #   LOREHUB_SMTP_PASSWORD, LOREHUB_SMTP_FROM
+    # `required: false` so `docker compose up` still works before an
+    # operator has run `cp .env.example .env` (see docs/DEPLOYMENT.md) —
+    # without it, a missing `.env` hard-fails the whole stack with a fairly
+    # unfriendly error instead of just falling back to this file's defaults.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "4000:4000"
+    # Reuses the `HEALTHCHECK` baked into the image (see
+    # lorehub-api/Dockerfile) — Compose auto-detects it, no need to redeclare.
+
+  lorehub-web:
+    build:
+      context: ./lorehub-web
+      args:
+        # MUST be the host-reachable address (http://localhost:4000), NOT
+        # the Docker-internal service name (http://lorehub-api:4000).
+        #
+        # This is the single easiest thing to get wrong in this file: it
+        # looks like container-to-container traffic, so the instinct is to
+        # wire it to the internal service name the way you normally would.
+        # But `NEXT_PUBLIC_API_URL` (see lorehub-web/src/lib/api.ts) is
+        # baked into the *client* JS bundle at build time and used for
+        # browser-side `fetch` calls too, not just server-side ones — and a
+        # browser running on the host machine has no way to resolve
+        # `lorehub-api`, Docker's internal DNS name for the container. Only
+        # the published host port (`localhost:4000`, see the `ports:` entry
+        # on lorehub-api above) is reachable from the browser.
+        #
+        # Server Components/Route Handlers/proxy.ts running *inside* this
+        # container do NOT use this value — `localhost` from in-container
+        # would mean the container's own loopback, not lorehub-api's. They
+        # use `API_INTERNAL_URL` instead (see the `environment:` block
+        # below and src/lib/api.ts's comment on `API_BASE`).
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    environment:
+      # Server-side override (Server Components, Route Handlers, and
+      # src/proxy.ts) so code running *inside* this container reaches
+      # lorehub-api via Docker's internal service DNS instead of the
+      # browser-only `localhost:4000` baked into the client bundle above —
+      # see the matching comment in src/lib/api.ts. This is a plain runtime
+      # env var, not a build ARG, since it's never inlined into any bundle.
+      API_INTERNAL_URL: http://lorehub-api:4000
+    depends_on:
+      lorehub-api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  lorehub-db:

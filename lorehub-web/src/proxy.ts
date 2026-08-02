@@ -3,7 +3,14 @@ import type { NextRequest } from "next/server";
 
 const ACCESS_COOKIE = "lorehub_token";
 const REFRESH_COOKIE = "lorehub_refresh";
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+// Proxy always runs server-side (it's Middleware, never browser code), so it
+// always prefers `API_INTERNAL_URL` when set — see the matching comment in
+// `src/lib/api.ts` for why the server-reachable and browser-reachable
+// addresses can differ under Docker Compose.
+const API_BASE =
+  process.env.API_INTERNAL_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "http://localhost:4000";
 
 /**
  * Extracts the `name=value` pair from a raw `Set-Cookie` header string,

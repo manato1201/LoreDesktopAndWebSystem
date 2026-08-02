@@ -156,6 +156,14 @@ pub async fn require_auth(
     next.run(request).await
 }
 
+/// Trivial liveness probe — always `200`, never touches `AppState`. Used by
+/// the Docker `HEALTHCHECK` (see `Dockerfile`) and by anything else that just
+/// needs to know the process is up and accepting connections; deliberately
+/// not a deep dependency check (e.g. it doesn't query the database).
+pub async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,

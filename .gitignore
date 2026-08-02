@@ -57,3 +57,8 @@ compile_commands.json
 
 # Local reference material - not for publishing
 /web-production-skill/
+
+# env files (real secrets, docker-compose reads this at the repo root) —
+# .env.example stays tracked as the template
+/.env
+!/.env.example
