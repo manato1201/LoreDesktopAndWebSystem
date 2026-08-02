@@ -3,8 +3,10 @@ import type {
   AuditLogEntry,
   Branch,
   Commit,
+  InvitePreview,
   MemberRole,
   OrgMember,
+  PendingInvite,
   PermissionLevel,
   PRStatus,
   PullRequest,
@@ -380,6 +382,137 @@ export async function changePassword(
   }
   const body = await res.json().catch(() => ({}) as { error?: string });
   return { ok: false, error: body.error ?? "Could not change password" };
+}
+
+/**
+ * Kicks off the forgot-password flow (`POST /api/auth/forgot-password`).
+ * The endpoint always responds `204` whether or not the email belongs to an
+ * account — that's deliberate anti-enumeration behavior on the server (see
+ * `forgot_password` in `lorehub-api/src/handlers.rs`), so this helper
+ * doesn't return anything for the caller to branch on. A network-level
+ * failure is swallowed the same way: surfacing "that failed, try again" only
+ * for a bad connection while silently succeeding for a nonexistent email
+ * would itself leak which case happened, so both paths end at the same
+ * generic "check your email" UI state.
+ */
+export async function forgotPassword(email: string): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      credentials: "include",
+    });
+  } catch {
+    // Swallowed — see doc comment above.
+  }
+}
+
+/**
+ * Completes the forgot-password flow (`POST /api/auth/reset-password`).
+ * Unauthenticated (the caller has no session yet), so this is a plain
+ * `fetch` rather than one of the `fetchWithRefresh`-based helpers. Unlike
+ * `forgotPassword`, the outcome here is meaningful to show the user — a
+ * missing/expired/already-used token or an under-length password both
+ * produce a descriptive error body worth surfacing directly.
+ */
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, newPassword }),
+    credentials: "include",
+  });
+  if (res.status === 204) {
+    return { ok: true };
+  }
+  const body = await res.json().catch(() => ({}) as { error?: string });
+  return { ok: false, error: body.error ?? "Could not reset password" };
+}
+
+/**
+ * Looks up who an invite token is for (`GET /api/auth/invite/{token}`) so
+ * the accept-invite page can show "you've been invited as ..." context
+ * before asking for a password. Public/unauthenticated endpoint; `null`
+ * covers every failure mode (missing, expired, already-used, or malformed
+ * token) since the accept-invite UI treats them all identically.
+ */
+export async function getInvitePreview(
+  token: string,
+): Promise<InvitePreview | null> {
+  const res = await fetch(
+    `${API_BASE}/api/auth/invite/${encodeURIComponent(token)}`,
+    { cache: "no-store", credentials: "include" },
+  );
+  if (!res.ok) return null;
+  return res.json() as Promise<InvitePreview>;
+}
+
+/**
+ * Redeems an invite token and sets a password (`POST
+ * /api/auth/accept-invite`). Mirrors `login()`'s shape exactly: on success
+ * the server also sets the session/refresh cookies, so the caller ends up
+ * auto-logged-in and can navigate straight into the app rather than back to
+ * `/login`.
+ */
+export async function acceptInvite(
+  token: string,
+  password: string,
+): Promise<{ ok: true; user: OrgMember } | { ok: false; error: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/accept-invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}) as { error?: string });
+    return { ok: false, error: body.error ?? "Could not accept invite" };
+  }
+  const data = (await res.json()) as { user: OrgMember };
+  return { ok: true, user: data.user };
+}
+
+/**
+ * Owner/Admin-only (`POST /api/org/invites`). The list endpoint
+ * (`listInvites` below) never re-exposes the secret `inviteUrl` once
+ * created, so this is the one moment the caller can show/copy it — worth
+ * returning even though the rest of the created record isn't, since the
+ * Settings UI already has the email/name/role/teams it just submitted.
+ */
+export async function createInvite(
+  email: string,
+  name: string,
+  role: MemberRole,
+  teams: string[],
+): Promise<{ ok: true; inviteUrl: string } | { ok: false; error: string }> {
+  const res = await fetchWithRefresh(() =>
+    fetch(`${API_BASE}/api/org/invites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name, role, teams }),
+      cache: "no-store",
+      credentials: "include",
+    }),
+  );
+  if (res.status === 201) {
+    const data = (await res.json()) as { inviteUrl: string };
+    return { ok: true, inviteUrl: data.inviteUrl };
+  }
+  const body = await res.json().catch(() => ({}) as { error?: string });
+  return { ok: false, error: body.error ?? "Could not create invite" };
+}
+
+export function listInvites(cookie?: string): Promise<PendingInvite[]> {
+  return apiGet("/api/org/invites", cookie);
+}
+
+/** Owner/Admin-only (`DELETE /api/org/invites/{email}`); always `204`, idempotent. */
+export async function revokeInvite(email: string): Promise<void> {
+  await apiDelete(`/api/org/invites/${encodeURIComponent(email)}`);
 }
 
 export async function logout(): Promise<void> {
