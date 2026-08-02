@@ -258,6 +258,34 @@ pub struct OrgMember {
     pub joined_at: String,
 }
 
+/// A pending invitation created by `POST /api/org/invites`, keyed in
+/// `AppState::invites` by the (secret) invite token. The invited person only
+/// gains a real `OrgMember` entry once they accept via
+/// `POST /api/auth/accept-invite` — until then, this is the only record that
+/// the signup is in flight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteEntry {
+    pub email: String,
+    pub name: String,
+    pub role: MemberRole,
+    pub teams: Vec<String>,
+    pub invited_by: String,
+    pub expires_at: i64,
+}
+
+/// A pending password-reset request created by
+/// `POST /api/auth/forgot-password`, keyed in `AppState::password_resets` by
+/// the (secret) reset token. Deliberately carries only `email` + expiry — no
+/// `invited_by`/`teams`/etc. like `InviteEntry`, since a reset isn't creating
+/// a new identity, just proving control of an existing one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordResetEntry {
+    pub email: String,
+    pub expires_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {

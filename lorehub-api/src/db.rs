@@ -151,6 +151,11 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
             .await
             .unwrap_or_default(),
         refresh_tokens: load_blob(pool, "refresh_tokens").await.unwrap_or_default(),
+        // Brand-new fields with no legacy on-disk shape — plain `load_blob`
+        // (not `load_blob_lenient`) is fine since there's no old shape to
+        // fall back from.
+        invites: load_blob(pool, "invites").await.unwrap_or_default(),
+        password_resets: load_blob(pool, "password_resets").await.unwrap_or_default(),
     })
 }
 
@@ -177,4 +182,6 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "credentials", &state.credentials).await;
     save_blob(pool, "sessions", &state.sessions).await;
     save_blob(pool, "refresh_tokens", &state.refresh_tokens).await;
+    save_blob(pool, "invites", &state.invites).await;
+    save_blob(pool, "password_resets", &state.password_resets).await;
 }
