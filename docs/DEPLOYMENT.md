@@ -72,6 +72,37 @@ When you add a reverse proxy, also update `LOREHUB_WEB_ORIGIN` and
 actually use — both currently default to `localhost` addresses meant for
 this single-host Compose setup.
 
+## Observability
+
+`lorehub-api` exposes `GET /metrics` — Prometheus text-exposition format,
+covering a request counter and a latency histogram labeled by method,
+matched route, and status code (see `lorehub-api/src/main.rs`'s
+`metrics_layer_and_handle`). It's deliberately **not** under `/api` (the
+convention Prometheus operators' scrape configs already expect) and
+deliberately **unauthenticated** (a scraper carries no session cookie).
+That second point cuts both ways: **do not** expose `/metrics` on the
+public internet without a reverse-proxy rule restricting it to your
+monitoring network — same caution as the TLS/cookie-security note above,
+just for request-volume/latency data instead of session cookies.
+
+A minimal Prometheus `scrape_configs` entry, assuming the reverse proxy
+setup described above:
+
+```yaml
+scrape_configs:
+  - job_name: lorehub-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["lorehub-api-internal-host:4000"]
+```
+
+Per-request access logs (method, path, status, latency) are emitted at INFO
+via `tower_http`'s `TraceLayer`. By default they're human-readable, meant
+for a developer watching a terminal. Set `LOREHUB_LOG_FORMAT=json` (see
+`lorehub-api/.env.example`) to switch to one JSON object per line instead —
+what a real log aggregator (Loki, CloudWatch, etc.) needs to parse fields
+out of a line rather than scraping free-form text.
+
 ## Backup
 
 The entire durable state of this application is one file:
