@@ -30,13 +30,22 @@ pub type SharedState = Arc<AppContext>;
 pub struct AppContext {
     state: RwLock<AppState>,
     pub db: SqlitePool,
+    /// Resolved SMTP relay config, or `None` for the local-dev fallback (see
+    /// `email::send_email`). Startup-time config, not persisted data — that's
+    /// why it lives here rather than in `AppState`.
+    pub email_config: Option<crate::email::SmtpConfig>,
 }
 
 impl AppContext {
-    pub fn new(state: AppState, db: SqlitePool) -> Self {
+    pub fn new(
+        state: AppState,
+        db: SqlitePool,
+        email_config: Option<crate::email::SmtpConfig>,
+    ) -> Self {
         Self {
             state: RwLock::new(state),
             db,
+            email_config,
         }
     }
 
@@ -106,6 +115,14 @@ pub struct AppState {
     /// mixing them into one map would make expiry/rotation logic ambiguous
     /// about which kind of token a given key is.
     pub refresh_tokens: HashMap<String, SessionEntry>,
+    /// Invite token -> pending invite. A member only exists in `org_members`
+    /// once the invite is accepted (`POST /api/auth/accept-invite`); until
+    /// then this is the only record of the pending signup.
+    pub invites: HashMap<String, InviteEntry>,
+    /// Password-reset token -> which account it's for and when it expires.
+    /// Separate from `invites` because the TTL and accept-side validation
+    /// differ (see `handlers::reset_password`).
+    pub password_resets: HashMap<String, PasswordResetEntry>,
 }
 
 impl AppState {
@@ -808,6 +825,8 @@ pub fn seed() -> AppState {
         credentials,
         sessions: HashMap::new(),
         refresh_tokens: HashMap::new(),
+        invites: HashMap::new(),
+        password_resets: HashMap::new(),
     }
 }
 

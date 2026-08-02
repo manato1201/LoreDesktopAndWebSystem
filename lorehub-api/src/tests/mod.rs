@@ -39,6 +39,8 @@ mod auth;
 mod authz;
 mod body_limit;
 mod change_password;
+mod invites;
+mod password_reset;
 mod rate_limit;
 mod repositories;
 mod upload_and_range;
@@ -77,8 +79,28 @@ pub async fn test_app() -> Router {
 pub async fn test_app_with_config(config: RouterConfig) -> Router {
     let pool = db::connect(":memory:").await;
     let seeded = state::seed();
-    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool));
+    // Tests never send real email — `email_config: None` drives every
+    // send through `email::send_email`'s log-only fallback path, which is
+    // fine since these tests assert against HTTP-visible side effects
+    // (token now exists / member now exists) rather than email content.
+    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
     build_router(shared_state, config)
+}
+
+/// Like [`test_app`], but also hands back the `SharedState` backing the
+/// router. Needed by tests that must observe a server-generated secret which
+/// is never returned over HTTP (e.g. `POST /api/auth/forgot-password`'s
+/// reset token, deliberately not present in its response body) — those
+/// tests read `ctx.read().await.password_resets` directly instead. This is
+/// the first place a test needs that kind of access; `test_app`/
+/// `test_app_with_config` stay as-is (return only `Router`) for every other
+/// test that doesn't need it.
+pub async fn test_app_with_state() -> (Router, SharedState) {
+    let pool = db::connect(":memory:").await;
+    let seeded = state::seed();
+    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
+    let router = build_router(shared_state.clone(), RouterConfig::from_env());
+    (router, shared_state)
 }
 
 /// Drives `req` through `app` via `oneshot` and returns the response.

@@ -1481,6 +1481,16 @@ pub struct ChangePasswordRequest {
 /// client can't be trusted to enforce it.
 const MIN_PASSWORD_LEN: usize = 8;
 
+/// How long an admin-issued invite (`POST /api/org/invites`) stays
+/// acceptable before `GET /api/auth/invite/{token}` / `POST /api/auth/
+/// accept-invite` start treating it as gone.
+const INVITE_TTL_SECS: i64 = 7 * 24 * 60 * 60; // 7 days
+
+/// How long a forgot-password reset link stays valid. Much shorter than an
+/// invite since it's a higher-stakes secret — it grants immediate account
+/// takeover on an *existing* account, not just initial signup.
+const PASSWORD_RESET_TTL_SECS: i64 = 60 * 60; // 1 hour
+
 /// `POST /api/auth/change-password` — self-service password rotation for the
 /// already-authenticated caller. Unlike `login`, this sits behind
 /// `require_auth`, so `user` is taken from the request extension rather than
@@ -1544,6 +1554,441 @@ pub async fn change_password(
     crate::db::save_blob(&ctx.db, "credentials", &credentials).await;
     crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
     crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Human-readable label for a `MemberRole`, used in invite-email copy.
+/// Deliberately separate from `MemberRole`'s serde representation (which is
+/// lowercase, see `models.rs`) — this is for a plain-text email body a human
+/// reads, not JSON.
+fn role_label(role: MemberRole) -> &'static str {
+    match role {
+        MemberRole::Owner => "Owner",
+        MemberRole::Admin => "Admin",
+        MemberRole::Member => "Member",
+    }
+}
+
+/// Derives the initials `AppState::seed()` would have hand-written for
+/// `name`: the uppercase first letter of each of the first two
+/// whitespace-separated words (e.g. "Aiko Tanaka" -> "AT"). Used by
+/// `accept_invite` to compute `OrgMember::initials` for a brand-new member,
+/// matching the existing seeded convention rather than inventing a new one.
+fn initials_for_name(name: &str) -> String {
+    name.split_whitespace()
+        .take(2)
+        .filter_map(|word| word.chars().next())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Reads `LOREHUB_WEB_ORIGIN`, falling back to the Next.js dev server
+/// default — mirrors `main.rs::DEFAULT_CORS_ORIGIN`'s default. Handlers
+/// don't have `RouterConfig` in scope (it's assembled once in `main.rs` and
+/// only used to build the router/middleware stack), so invite/reset links
+/// re-read the env var directly here rather than threading `RouterConfig`
+/// through `AppContext` for this one string.
+fn web_origin() -> String {
+    std::env::var("LOREHUB_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:3000".into())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteRequest {
+    pub email: String,
+    pub name: String,
+    pub role: MemberRole,
+    pub teams: Vec<String>,
+}
+
+/// `POST /api/org/invites` — Owner/Admin only. Creates a pending invite
+/// (see `InviteEntry`) and best-effort emails the invite link to
+/// `body.email`. The link is also returned directly in the response body
+/// (`inviteUrl`) as the manual-fallback distribution path when no SMTP relay
+/// is configured or delivery fails; this is safe specifically because only
+/// an already-authenticated Owner/Admin can reach this handler.
+pub async fn create_invite(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Json(body): Json<InviteRequest>,
+) -> Response {
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "invite member", &body.email).await;
+    }
+
+    let mut state = ctx.write().await;
+    if state.org_members.iter().any(|m| m.email == body.email) {
+        return bad_request("a member with this email already exists");
+    }
+
+    // Overwrite any prior pending invite for this email — re-inviting is
+    // just "extend/replace", not an error. `invites` is keyed by token, so
+    // an old token for the same email has to be explicitly dropped or two
+    // different tokens would both remain acceptable for the same signup.
+    state.invites.retain(|_, entry| entry.email != body.email);
+
+    let token = auth::generate_token();
+    let now = auth::current_unix_time();
+    let expires_at = now + INVITE_TTL_SECS;
+    state.invites.insert(
+        token.clone(),
+        InviteEntry {
+            email: body.email.clone(),
+            name: body.name.clone(),
+            role: body.role,
+            teams: body.teams.clone(),
+            invited_by: user.name.clone(),
+            expires_at,
+        },
+    );
+
+    state.record_audit(&user.name, "invited", &body.email);
+
+    let invites = state.invites.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "invites", &invites).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    let invite_url = format!("{}/accept-invite?token={token}", web_origin());
+    crate::email::send_email(
+        ctx.email_config.as_ref(),
+        &body.email,
+        "You've been invited to LoreHub",
+        &format!(
+            "You've been invited to join LoreHub as {}. Accept your invite here: {invite_url}",
+            role_label(body.role)
+        ),
+    )
+    .await;
+
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "email": body.email,
+            "name": body.name,
+            "role": body.role,
+            "teams": body.teams,
+            "expiresAt": expires_at,
+            "inviteUrl": invite_url,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/org/invites` — Owner/Admin only. Lists currently non-expired
+/// pending invites. Deliberately omits the raw token (`inviteUrl` from
+/// `create_invite`'s response) — an admin re-listing pending invites doesn't
+/// need the secret link re-exposed; to resend it they revoke and recreate.
+pub async fn list_invites(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+) -> Response {
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "list invites", "org/invites").await;
+    }
+
+    let state = ctx.read().await;
+    let now = auth::current_unix_time();
+    let pending: Vec<serde_json::Value> = state
+        .invites
+        .values()
+        .filter(|entry| entry.expires_at > now)
+        .map(|entry| {
+            serde_json::json!({
+                "email": entry.email,
+                "name": entry.name,
+                "role": entry.role,
+                "teams": entry.teams,
+                "invitedBy": entry.invited_by,
+                "expiresAt": entry.expires_at,
+            })
+        })
+        .collect();
+
+    Json(pending).into_response()
+}
+
+/// `DELETE /api/org/invites/{email}` — Owner/Admin only. Idempotent: removes
+/// any pending invite(s) for `email` (there should be at most one, per
+/// `create_invite`'s overwrite-on-re-invite behavior) and returns `204`
+/// whether or not one existed.
+pub async fn revoke_invite(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path(email): Path<String>,
+) -> Response {
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "revoke invite for", &email).await;
+    }
+
+    let mut state = ctx.write().await;
+    state.invites.retain(|_, entry| entry.email != email);
+
+    state.record_audit(&user.name, "revoked invite for", &email);
+
+    let invites = state.invites.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+    crate::db::save_blob(&ctx.db, "invites", &invites).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// `GET /api/auth/invite/{token}` — PUBLIC, no auth required (the whole
+/// point is letting someone who isn't a member yet preview the invite before
+/// they have any credentials). Returns just enough for an accept-invite page
+/// to render "you're joining as {name} with role {role}" — deliberately
+/// omits `invitedBy`/`teams`, which the preview doesn't need.
+pub async fn get_invite(State(ctx): State<SharedState>, Path(token): Path<String>) -> Response {
+    let state = ctx.read().await;
+    let now = auth::current_unix_time();
+    match state.invites.get(&token) {
+        Some(entry) if entry.expires_at > now => Json(serde_json::json!({
+            "email": entry.email,
+            "name": entry.name,
+            "role": entry.role,
+        }))
+        .into_response(),
+        _ => not_found("invite not found or expired"),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptInviteRequest {
+    pub token: String,
+    pub password: String,
+}
+
+/// `POST /api/auth/accept-invite` — PUBLIC, no auth required (the caller
+/// doesn't have credentials yet). Validates the token exactly like
+/// `get_invite`, then turns the invite into a real `OrgMember` + credential
+/// and logs the new member straight in — issuing a session/refresh-token
+/// pair and setting both cookies, the same shape `login` produces, so
+/// there's no separate login step after accepting.
+pub async fn accept_invite(
+    State(ctx): State<SharedState>,
+    Json(body): Json<AcceptInviteRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    let now = auth::current_unix_time();
+
+    let Some(entry) = state.invites.get(&body.token).cloned() else {
+        return not_found("invite not found or expired");
+    };
+    if entry.expires_at <= now {
+        return not_found("invite not found or expired");
+    }
+
+    if body.password.len() < MIN_PASSWORD_LEN {
+        return bad_request(&format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        ));
+    }
+
+    // Guard against a race where the email became a member between
+    // invite-creation and acceptance — don't silently overwrite an existing
+    // account.
+    if state.org_members.iter().any(|m| m.email == entry.email) {
+        return bad_request("a member with this email already exists");
+    }
+
+    let new_member = OrgMember {
+        name: entry.name.clone(),
+        initials: initials_for_name(&entry.name),
+        email: entry.email.clone(),
+        role: entry.role,
+        teams: entry.teams.clone(),
+        joined_at: "just now".to_string(),
+    };
+    state.org_members.push(new_member.clone());
+    state
+        .credentials
+        .insert(entry.email.clone(), auth::hash_password(&body.password));
+    state.invites.remove(&body.token);
+
+    let access_token = auth::generate_token();
+    let refresh_token = auth::generate_token();
+    state.sessions.insert(
+        access_token.clone(),
+        SessionEntry {
+            email: entry.email.clone(),
+            expires_at: now + auth::ACCESS_TOKEN_TTL_SECS,
+        },
+    );
+    state.refresh_tokens.insert(
+        refresh_token.clone(),
+        SessionEntry {
+            email: entry.email.clone(),
+            expires_at: now + auth::REFRESH_TOKEN_TTL_SECS,
+        },
+    );
+
+    state.record_audit(&new_member.name, "accepted invite for", &new_member.email);
+
+    let org_members = state.org_members.clone();
+    let credentials = state.credentials.clone();
+    let invites = state.invites.clone();
+    let sessions = state.sessions.clone();
+    let refresh_tokens = state.refresh_tokens.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+
+    crate::db::save_blob(&ctx.db, "org_members", &org_members).await;
+    crate::db::save_blob(&ctx.db, "credentials", &credentials).await;
+    crate::db::save_blob(&ctx.db, "invites", &invites).await;
+    crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+    crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+    crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::SET_COOKIE,
+        auth::session_cookie(&access_token).parse().unwrap(),
+    );
+    headers.append(
+        header::SET_COOKIE,
+        auth::refresh_cookie(&refresh_token).parse().unwrap(),
+    );
+
+    (headers, Json(serde_json::json!({ "user": new_member }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+/// `POST /api/auth/forgot-password` — PUBLIC, no auth required. ALWAYS
+/// returns `204 No Content`, regardless of whether `email` matches an
+/// existing account — a deliberate anti-enumeration control. If this
+/// endpoint's response (404 vs. 204) told a caller whether an email has a
+/// LoreHub account, it could be used to enumerate valid accounts wholesale;
+/// see `authz.rs`/`change_password`'s doc comments for this codebase's habit
+/// of writing out non-obvious security decisions like this one. For the same
+/// reason, an unknown email is never audit-logged here — logging the
+/// attempted address would just move the enumeration oracle from the HTTP
+/// response into whatever the audit log/server logs, which an operator might
+/// expose. A *successful* token issuance isn't audited either — there's no
+/// authenticated actor to attribute it to, since this is a public,
+/// unauthenticated action.
+pub async fn forgot_password(
+    State(ctx): State<SharedState>,
+    Json(body): Json<ForgotPasswordRequest>,
+) -> Response {
+    let now = auth::current_unix_time();
+    let mut state = ctx.write().await;
+
+    let exists = state.org_members.iter().any(|m| m.email == body.email);
+    let mut issued_token = None;
+    if exists {
+        // Remove any other pre-existing reset token for this email first —
+        // an old, still-valid link a user requested earlier must not remain
+        // replayable after they requested (and will use) a newer one.
+        state
+            .password_resets
+            .retain(|_, entry| entry.email != body.email);
+
+        let token = auth::generate_token();
+        state.password_resets.insert(
+            token.clone(),
+            PasswordResetEntry {
+                email: body.email.clone(),
+                expires_at: now + PASSWORD_RESET_TTL_SECS,
+            },
+        );
+        issued_token = Some(token);
+    }
+
+    let password_resets = state.password_resets.clone();
+    drop(state);
+
+    if let Some(token) = issued_token {
+        crate::db::save_blob(&ctx.db, "password_resets", &password_resets).await;
+
+        let reset_link = format!("{}/reset-password?token={token}", web_origin());
+        crate::email::send_email(
+            ctx.email_config.as_ref(),
+            &body.email,
+            "Reset your LoreHub password",
+            &format!(
+                "A password reset was requested for your LoreHub account. Reset it here: \
+                 {reset_link}\n\nIf you didn't request this, you can safely ignore this email."
+            ),
+        )
+        .await;
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+/// `POST /api/auth/reset-password` — PUBLIC, no auth required (the reset
+/// token itself, not a session, is what proves the caller controls the
+/// account). A bad/expired/already-used token is `401` — the same "you're
+/// not who you claim to be" shape as every other unauthenticated-identity
+/// failure in this codebase (reuses `unauthorized()`).
+///
+/// On success, every session and refresh token belonging to this account is
+/// invalidated — the exact same `retain` pattern and rationale as
+/// `change_password` (see its doc comment): a password reset is precisely
+/// the "I lost/forgot my password, possibly because it leaked" scenario, so
+/// any session an attacker already established must not survive it.
+pub async fn reset_password(
+    State(ctx): State<SharedState>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Response {
+    let mut state = ctx.write().await;
+    let now = auth::current_unix_time();
+
+    let Some(entry) = state.password_resets.get(&body.token).cloned() else {
+        return unauthorized();
+    };
+    if entry.expires_at <= now {
+        return unauthorized();
+    }
+
+    if body.new_password.len() < MIN_PASSWORD_LEN {
+        return bad_request(&format!(
+            "new password must be at least {MIN_PASSWORD_LEN} characters"
+        ));
+    }
+
+    state
+        .credentials
+        .insert(entry.email.clone(), auth::hash_password(&body.new_password));
+
+    state.sessions.retain(|_, s| s.email != entry.email);
+    state.refresh_tokens.retain(|_, s| s.email != entry.email);
+
+    // Remove the used token AND any other outstanding reset token for the
+    // same email — prevents replay of a second still-valid link after one
+    // has been used.
+    state.password_resets.retain(|_, e| e.email != entry.email);
+
+    state.record_audit(&entry.email, "reset password for", &entry.email);
+
+    let credentials = state.credentials.clone();
+    let sessions = state.sessions.clone();
+    let refresh_tokens = state.refresh_tokens.clone();
+    let password_resets = state.password_resets.clone();
+    let audit_log = state.audit_log.clone();
+    drop(state);
+
+    crate::db::save_blob(&ctx.db, "credentials", &credentials).await;
+    crate::db::save_blob(&ctx.db, "sessions", &sessions).await;
+    crate::db::save_blob(&ctx.db, "refresh_tokens", &refresh_tokens).await;
+    crate::db::save_blob(&ctx.db, "password_resets", &password_resets).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     StatusCode::NO_CONTENT.into_response()
