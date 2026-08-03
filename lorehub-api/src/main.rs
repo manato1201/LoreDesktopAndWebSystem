@@ -1,5 +1,7 @@
 mod auth;
 mod authz;
+mod blob_store;
+mod content_hash;
 mod db;
 mod email;
 mod handlers;

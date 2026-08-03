@@ -14,6 +14,7 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, Response, StatusCode, header};
 use http_body_util::BodyExt;
+use sqlx::SqlitePool;
 use tower::ServiceExt;
 
 use crate::state::{AppContext, SharedState};
@@ -45,6 +46,7 @@ mod metrics;
 mod password_reset;
 mod rate_limit;
 mod repositories;
+mod schema;
 mod upload_and_range;
 mod vcs;
 
@@ -103,6 +105,16 @@ pub async fn test_app_with_state() -> (Router, SharedState) {
     let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
     let router = build_router(shared_state.clone(), RouterConfig::from_env());
     (router, shared_state)
+}
+
+/// Opens a private, disposable in-memory SQLite pool (same
+/// `db::connect(":memory:")` call `test_app_with_config` makes) without the
+/// surrounding `AppContext`/`Router` machinery. For tests that assert
+/// directly against the schema itself (table existence, constraint
+/// enforcement — see `tests/schema.rs`) rather than HTTP behavior, where
+/// building a full router would be more setup than the test needs.
+pub async fn test_pool() -> SqlitePool {
+    db::connect(":memory:").await
 }
 
 /// Drives `req` through `app` via `oneshot` and returns the response.
