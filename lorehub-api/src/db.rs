@@ -15,24 +15,45 @@ use std::str::FromStr;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 use crate::state::AppState;
 
+/// Opens (creating if missing) the SQLite database at `path` and applies
+/// every migration under `./migrations` (see that directory — `kv_store`,
+/// then the VCS schema). `path == ":memory:"` is treated specially: it's
+/// what every integration test uses (see `tests/mod.rs::test_app_with_
+/// config`) for a private, disposable database, and WAL journaling is both
+/// meaningless and unsupported in the way this function would otherwise
+/// enable it for an in-memory SQLite database, so WAL is only turned on for
+/// a real file-backed `path`.
+///
+/// `PRAGMA foreign_keys = ON` is enabled unconditionally (both real and
+/// `:memory:` connections) — SQLite defaults this pragma to OFF per
+/// connection, which would otherwise silently allow orphaned rows across the
+/// new VCS tables' `repo_slug` foreign keys (all declared `ON DELETE
+/// CASCADE` — see `migrations/0001_vcs_schema.sql`).
 pub async fn connect(path: &str) -> SqlitePool {
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
+    let is_memory = path == ":memory:";
+
+    let mut options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
         .expect("invalid sqlite path")
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .foreign_keys(true);
+
+    if !is_memory {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
 
     let pool = SqlitePoolOptions::new()
         .connect_with(options)
         .await
         .expect("failed to open sqlite database");
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        .execute(&pool)
+    sqlx::migrate!("./migrations")
+        .run(&pool)
         .await
-        .expect("failed to create kv_store table");
+        .expect("failed to run database migrations");
 
     pool
 }
