@@ -21,6 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# `sqlx::migrate!("./migrations")` (see src/db.rs) is a compile-time macro:
+# it embeds every migration file's contents into the binary via
+# `include_str!`, resolved relative to `CARGO_MANIFEST_DIR` (i.e. this
+# `WORKDIR`) at *build* time. That means `migrations/` must be present here,
+# in the builder stage, before `cargo build` runs — the runtime stage below
+# does NOT need its own copy, since the migrations are already baked into
+# the compiled binary by the time it's copied over.
+COPY migrations ./migrations
 RUN cargo build --release
 
 # --- Runtime -----------------------------------------------------------
