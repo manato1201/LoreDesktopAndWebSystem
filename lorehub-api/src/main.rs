@@ -7,6 +7,7 @@ mod email;
 mod handlers;
 mod image_assets;
 mod models;
+mod repo_store;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -406,6 +407,11 @@ async fn main() {
     }
 
     let pool = db::connect("lorehub.db").await;
+
+    // Must run before `load_state`/`state::seed()` below — see its doc
+    // comment. Idempotent: a no-op once the `repositories` table has rows.
+    db::migrate_or_seed_repositories(&pool).await;
+
     let initial_state = match db::load_state(&pool).await {
         Some(state) => {
             tracing::info!("loaded persisted state from lorehub.db");
