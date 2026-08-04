@@ -1,5 +1,6 @@
 mod auth;
 mod authz;
+mod blob_meta_store;
 mod blob_store;
 mod content_hash;
 mod db;
