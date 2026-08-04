@@ -419,6 +419,12 @@ async fn main() {
     // Must run before `load_state`/`state::seed()` below — see its doc
     // comment. Idempotent: a no-op once the `repositories` table has rows.
     db::migrate_or_seed_repositories(&pool).await;
+    // One-time sweep of stale pre-redesign `kv_store` rows (`"tree"`,
+    // `"commits"`, etc. — see its doc comment for the full list). Must run
+    // after `migrate_or_seed_repositories` above, which still reads the
+    // `"repositories"` key on a pre-Phase-2 database. Idempotent: a no-op on
+    // every restart once those rows are gone (or never existed).
+    db::cleanup_legacy_kv_store_keys(&pool).await;
     // Backfills real commit/branch/tree history for any seeded repository
     // that doesn't have any yet (a genuinely fresh `lorehub.db`). A no-op on
     // every subsequent restart, once each seeded repo has real commits — see

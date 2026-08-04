@@ -15,8 +15,8 @@ LoreDesktopAndWebSystem/
 │   └── src/
 │       ├── main.rs             # ルーティング / CORS / サーバ起動
 │       ├── handlers.rs         # 各エンドポイントのハンドラ
-│       ├── state.rs             # AppState定義・シード生成
-│       ├── db.rs                 # SQLite kv_store 永続化
+│       ├── state.rs             # AppState定義・シード生成(非VCSデータのみ)
+│       ├── db.rs                 # 永続化(非VCS: kv_storeブロブ / VCS: 正規化テーブル)
 │       ├── auth.rs                # パスワードハッシュ/セッション
 │       ├── models.rs               # シリアライズ用データ型
 │       └── image_assets.rs          # 画像プレビュー生成
@@ -150,18 +150,18 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 ### 3.2 DELETE /api/repositories/{slug} の仕様
 
 - 対象リポジトリと、それに紐づく `pull_requests` を全て削除
-- `seeded_repo_slugs` からも除去(空ツリー扱いの対象から外す)
+- 実際には `repositories` テーブルの行を1つ削除するだけ——全VCSテーブルの `repo_slug` 外部キーが `ON DELETE CASCADE`(`PRAGMA foreign_keys = ON` を接続ごとに有効化)で宣言されているため、`commits`/`branches`/`tree_entries`/`file_blobs`/`pending_changes`/`file_locks`等の関連行が同一操作で原子的にすべて消える。ファイルシステム上のblobディレクトリ(`{blob_base_dir}/blobs/{slug}/`)も後処理で削除する
 - 成功時 `204 No Content`、存在しなければ `404 Not Found`
 - 監査ログに `"deleted repository"` を記録
 
-### 3.3 VCS書き込みAPI(ステージ・コミット・ブランチ)
+### 3.3 VCS書き込みAPI(ステージ・コミット・ブランチ)— 実コンテンツアドレス方式
 
-`tree`/`commits`/`branches` は元々全リポジトリで共有される単一のグローバルデータだったが、書き込み操作を導入するにあたりリポジトリごとの `HashMap<slug, Vec<T>>` へリファクタリングした(GETレスポンスの形状は変更なし、単なる内部ストレージの変更)。
+`tree`/`commits`/`branches` は当初 `AppState` 内のリポジトリごとの `HashMap<slug, Vec<T>>` だったが、VCS再設計により実コンテンツアドレス方式の正規化SQLテーブル(`commits`/`branches`/`commit_files`/`tree_entries`/`file_blobs`/`pending_changes`/`staged_content`など)へ全面移行した(正確なスキーマは `lorehub-api/migrations/0001_vcs_schema.sql` を参照)。GETレスポンスの形状は変更なし——値だけ本物になった(`hash`は40→64桁hex、`shortHash`は7→12桁、`sizeDeltaLabel`は常に`"—"`だったのが実計算値になった)。
 
-- `POST /api/repositories/{slug}/tree/stage` — body: `{ "path": "...", "changeType": "added"|"modified"|"deleted", "staged": true|false }`。`toggle_lock` と同じパターンでパスごとの保留変更を追加/削除。
-- `POST /api/repositories/{slug}/commits` — body: `{ "message": "...", "description": "" }`。保留変更が空なら `400`。`rand` crateで40文字の16進フェイクハッシュを生成し、`Commit` を該当ブランチの末尾に追加、ブランチの `head` を更新、保留変更をクリア。
-- `POST /api/repositories/{slug}/branches` — body: `{ "name": "...", "from": "main" }`。`from` 省略時は現在のブランチ。既存名なら `400`。
-- `POST /api/repositories/{slug}/checkout` — body: `{ "branch": "..." }`。`current_branch` (repo slug単位のHashMap) を更新。
+- `POST /api/repositories/{slug}/tree/stage` — body: `{ "path": "...", "changeType": "added"|"modified"|"deleted", "staged": true|false }`。`toggle_lock` と同じパターンでパスごとの保留変更(`pending_changes`テーブル)を追加/削除。ステージ時点で `staged_content` テーブルから実際の `content_hash`/`size_bytes` を確定する。
+- `POST /api/repositories/{slug}/commits` — body: `{ "message": "...", "description": "" }`。保留変更が空なら `400`。追加/変更パスに未アップロードのコンテンツ(`content_hash IS NULL`)が残っていれば `400`。`commit_hash` は `repo_slug`+親hash+ブランチ+author+message+description+ソート済み変更一覧+作成時刻からSHA-256で実際に導出される64桁hex(旧実装の`rand` crateによる40桁フェイクハッシュを置き換え)。親コミットの `tree_entries` をコピーしてpending_changesを適用した新しいツリースナップショットを構築し、`commits`/`commit_files`/`tree_entries` へ書き込み、ブランチの `head_commit_hash` を更新、`pending_changes`/`staged_content` から該当パスを削除する。
+- `POST /api/repositories/{slug}/branches` — body: `{ "name": "...", "from": "main" }`。`from` 省略時は現在のブランチ。既存名なら `400`。作成した行は実際の `branches` テーブルの1行であり、`head_commit_hash` を持つ。
+- `POST /api/repositories/{slug}/checkout` — body: `{ "branch": "..." }`。`current_branch` テーブル(`repo_slug`単位)を更新するだけだが、これにより後続の `GET /tree`/`GET /commits` が実際に別ブランチの内容を返すようになる(チェックアウトが読み取り結果を一切変えなかった旧実装からの挙動修正)。
 
 ### 3.4 PUT /api/access-control/entries の仕様
 
@@ -169,7 +169,7 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 
 ### 3.5 アップロードの種別推定とHTTP Range対応
 
-`POST .../upload` は body `{ "path": "...", "contentBase64": "..." }` を受け取り、`path` の拡張子から種別を推定して `uploaded_images`/`uploaded_text`/`uploaded_audio`(いずれも `HashMap<slug, HashMap<path, Vec<u8>>>`、リポジトリ単位で分離)のいずれかへ保存する(`.txt`/`.md`/`.json`/`.yaml`/`.yml` → text、`.wav`/`.mp3` → audio、それ以外 → image)。3Dモデルは意図的に対象外(§7参照)。
+`POST .../upload` は body `{ "path": "...", "contentBase64": "..." }` を受け取り、実バイト列から `content_hash = SHA-256` を算出してファイルシステム(`{blob_base_dir}/blobs/{slug}/{hash[..2]}/{hash}`、既存パスなら書き込みをスキップ)へ保存し、`file_blobs` テーブルへ重複排除INSERT、`staged_content` テーブルをupsertする(旧実装の `uploaded_images`/`uploaded_text`/`uploaded_audio` という3つの生バイトHashMapは廃止)。`path` の拡張子から種別を推定する部分は変更なし(`.txt`/`.md`/`.json`/`.yaml`/`.yml` → text、`.wav`/`.mp3` → audio、それ以外 → image)。同一内容を複数回アップロードしても `file_blobs` には1行しか残らず、ディスク上のblobファイルも1つだけになる(コンテンツの重複排除)。3Dモデルは意図的に対象外(§7参照)。
 
 `get_image`/`get_image_before`/`get_audio`/`get_file_content` は共通の `ranged_bytes_response` ヘルパーを通り、`Range: bytes=<start>-<end>` リクエストヘッダを解釈する:
 - ヘッダ無し → `200 OK`、全量を返す(`Accept-Ranges: bytes` を追加)
@@ -187,14 +187,14 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 - **透過的リフレッシュ(lorehub-web)**: CSR(ブラウザからの直接fetch)は `src/lib/api.ts` の `fetchWithRefresh` が401を検知して1回だけ `/api/auth/refresh` を叩きリトライする(同時に複数リクエストが401した場合もリフレッシュ呼び出しは1回に共有され、リトライも無限ループしない)。SSR(Server Component)はCookieを書き換えられないため、`src/proxy.ts`(このNext.jsバージョンで `middleware.ts` から改名された規約 — `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` 参照)がレンダリング前にアクセスCookie欠落を検知して先回りでリフレッシュする。
 - **プロアクティブリフレッシュ(LoreForge Client / Server Admin)**: `AuthController`(Client)と `PermissionConfigController`(Server Admin)はどちらもログイン成功時に `QTimer`(25分間隔、定数 `kRefreshIntervalMs`)を起動し、30分のアクセストークンTTLより先に `POST /api/auth/refresh` を送る。リフレッシュトークンは共有 `QNetworkAccessManager` のCookie jarに既に保持されているため、追加の配線は不要。リフレッシュが失敗した場合(リフレッシュトークン自体の失効・サーバーダウン)はタイマーを止めてログアウト/未接続状態へ遷移する。個々のリクエストへ401リトライを後付けするより単純で、デスクトップアプリのセッションライフサイクルに適した設計として意図的に選択(Web版のリアクティブ方式とは異なる)。
 
-## 5. 永続化: kv_store 方式
+## 5. 永続化: kv_store ブロブ方式 + 正規化VCSテーブルの併存
 
-`lorehub-api/src/db.rs` は `AppState` の各フィールドを個別のJSONブロブとして1テーブル(`kv_store: key TEXT, value TEXT`)に保存する。
+2つの永続化方式が併存する(詳細は `lorehub-api/src/db.rs` のモジュールコメントを一次情報源とする)。
 
-利点: Rustの構造体をそのまま `serde_json::to_string` / `from_str` でき、マイグレーション不要。
-制約: SQLでの複雑な検索・集計はできない(全件ロードしてRust側でフィルタする設計)。デモ〜小規模組織のデータ量を前提とした意図的なトレードオフ。
+- **非VCSデータ**(`pull_requests`/`access_entries`/`org_members`/`storage`/`audit_log`/`credentials`/`sessions`/`refresh_tokens`/`invites`/`password_resets`): `AppState` の各フィールドを個別のJSONブロブとして1テーブル(`kv_store: key TEXT, value TEXT`)に保存する。利点はRustの構造体をそのまま `serde_json::to_string`/`from_str` でき、マイグレーション不要な点。制約はSQLでの複雑な検索・集計ができないこと(全件ロードしてRust側でフィルタする設計)。今回のVCS再設計ではスコープ外と判断し、このデモ〜小規模組織のデータ量を前提としたトレードオフをそのまま維持している。
+- **VCSデータ**(`repositories`/`file_blobs`/`branches`/`current_branch`/`commits`/`commit_files`/`tree_entries`/`staged_content`/`pending_changes`/`file_locks`): 実コンテンツアドレス方式の正規化SQLテーブル。全ての `repo_slug` 外部キーが `ON DELETE CASCADE` で宣言されており、リポジトリ削除1文で関連行が原子的に全消去される(§3.2参照)。正確なスキーマ(カラム・制約・インデックス)は `lorehub-api/migrations/0001_vcs_schema.sql` を一次情報源とし、ここでは重複させない。`repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が `AppState` のロックを一切経由せず直接読み書きする。
 
-`load_state` は保存されたキーが一部欠けていても(例: 過去バージョンのDBに `seeded_repo_slugs` が無い場合)フォールバックして起動できるようになっている。
+`load_state`(非VCSデータのみが対象)は保存されたキーが一部欠けていても(例: 過去バージョンのDBに `refresh_tokens` が無い場合)フォールバックして起動できるようになっている。
 
 ## 6. Qt/QML 実装上の注意点(既知の落とし穴)
 
@@ -217,5 +217,5 @@ body: `HashMap<path, Vec<AccessEntry>>`(`GET` と同じ形状)。**全置換で�
 
 - LoreForge ClientのVCS操作はlorehub-apiへの直接書き込みで完結しており、`push`と`commit`の区別がない(ローカル/リモートの分離が存在しないため — 詳細はARCHITECTURE_AND_DESIGN.md §3.2)。
 - LoreForge Clientの3Dモデルdiffビューアはスタイライズされた代替表現であり、実際のFBX/OBJ等のモデルローダーは未実装(Web版の3Dビューアと同じ意図的な簡略化)。同じ理由でアセットアップロードも3Dモデルは対象外(反映先が存在しないため)。
-- `kv_store` 方式は将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。
+- `kv_store` 方式は非VCSデータについては引き続き将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。VCSデータ(リポジトリ・コミット・ブランチ・ツリー・ファイル実体)は本ドキュメント執筆時点で既に正規化SQLテーブルへ移行済み(§5参照)。
 - LoreForge Client/Server AdminにもQt Testによる単体テストを導入済み(`loreforge-client/tests/tst_repositorytreemodel.cpp`、`loreforge-server-admin/tests/tst_permissionconfigcontroller.cpp`)。GUI操作の自動化(`SendInput`等)はこのサンドボックスでは信頼できないため対象外とし、`RepositoryTreeModel`のツリー構築/Sparse Workspace Managerのinclude/exclude/cascade-exclude/ステージ管理、`PermissionConfigController`のJSON永続化ラウンドトリップなど、GUI非依存の純粋なモデル/コントローラロジックのみを対象にしている。各`CMakeLists.txt`に`enable_testing()`と`LoreForgeClientTests`/`LoreForgeServerAdminTests`ターゲットを追加し、`main.cpp`を除いた対象`.cpp`をテスト実行ファイルへ直接コンパイル(`QTEST_GUILESS_MAIN`が独自の`main()`を提供)。`ctest`(各`build/`ディレクトリ内)で実行できる。
