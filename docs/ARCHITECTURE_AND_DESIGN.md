@@ -29,19 +29,25 @@ graph TB
 
     subgraph Backend["lorehub-api (Rust / Axum)"]
         Handlers["Handlers<br/>(auth, repos, tree, commits, PR, access-control, org)"]
-        AppState["AppState<br/>(RwLock, in-memory)"]
-        DB["db.rs<br/>kv_store blob永続化"]
+        Authz["authz.rs<br/>パスACL + RBAC"]
+        AppState["AppState<br/>(RwLock, 非VCSデータのみ)"]
+        VcsStore["repo_store / vcs_store /<br/>lock_store / blob_store"]
     end
 
-    SQLite[("SQLite<br/>lorehub.db")]
+    SQLite[("SQLite<br/>lorehub.db<br/>kv_store + 正規化VCSテーブル")]
+    Blobs[("ファイルシステム<br/>blob store — hashごとの実バイト列")]
     Docker[("Docker<br/>MinIO<br/>(Server Adminが制御)")]
     ServerProc(["lorehub-api.exe<br/>ローカルプロセス"])
 
     WebUI -- "fetch, credentials: include<br/>Cookie(session)" --> Handlers
     Client -- "QNetworkAccessManager<br/>Cookie jar" --> Handlers
-    Handlers -- "read/write" --> AppState
-    AppState -- "save_blob / load_state" --> DB
-    DB --> SQLite
+    Handlers -- "パス/ロール認可チェック" --> Authz
+    Authz -- "read" --> AppState
+    Handlers -- "非VCS read/write" --> AppState
+    Handlers -- "VCS read/write" --> VcsStore
+    AppState -- "save_blob / load_state" --> SQLite
+    VcsStore -- "正規化テーブルI/O" --> SQLite
+    VcsStore -- "コンテンツ実体の保存/取得" --> Blobs
     ServerAdmin -- "docker run/stop/stats<br/>(QProcess)" --> Docker
     ServerAdmin -- "QProcess 起動/停止<br/>PID・メモリ監視" --> ServerProc
     ServerAdmin -- "PUT /api/access-control/entries<br/>(ログイン後)" --> Handlers
@@ -51,13 +57,16 @@ graph TB
     style Client fill:#1ed760,color:#121212
     style ServerAdmin fill:#1ed760,color:#121212
     style Handlers fill:#181818,color:#fff,stroke:#1ed760
+    style Authz fill:#181818,color:#fff,stroke:#f3727f
     style AppState fill:#181818,color:#fff,stroke:#4d4d4d
-    style DB fill:#181818,color:#fff,stroke:#4d4d4d
+    style VcsStore fill:#181818,color:#fff,stroke:#4d4d4d
 ```
 
 **現状の実装範囲の注記**: `ServerAdmin → ServerProc`(実プロセス起動/停止/PID・メモリ監視)、`ServerAdmin → Handlers`(権限グラフのApply)、`ServerAdmin → Docker` のMinIO制御(`docker run`/`stop`/`ps`/`stats`)はすべて実データ・実Docker環境で動作確認済み(コンテナの起動・ポートマッピング・`docker stats`による実CPU/メモリ取得・停止まで実機検証)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
 
-**書き込み経路についての注記(VCS再設計後)**: 上図の `AppState -- save_blob / load_state --> DB` という経路は、PR一覧・アクセス制御・組織メンバー・監査ログ・セッションなど非VCSデータにのみ適用される。リポジトリ・コミット・ブランチ・ファイルツリー・ロックなどVCSデータは `AppState` を経由せず、`repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が実コンテンツアドレス方式の正規化SQLテーブルへ直接読み書きする(§5参照)。
+**書き込み経路についての注記(VCS再設計後)**: `AppState -- save_blob / load_state --> SQLite` という経路は、PR一覧・アクセス制御・組織メンバー・監査ログ・セッションなど非VCSデータにのみ適用される。リポジトリ・コミット・ブランチ・ファイルツリー・ロックなどVCSデータは `AppState` を経由せず、`repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が実コンテンツアドレス方式の正規化SQLテーブル(同じ`lorehub.db`内)へ直接読み書きし、ファイル実体(SHA-256ハッシュで名前付けされたバイト列)は`blob_store.rs`経由でDBの外、ファイルシステムに保存される(§5参照)。この構成のDocker上での実際の配置(named volume・バックアップ対象)は`docs/DEPLOYMENT.md`のバックアップ節、§11も参照。
+
+**認可についての注記**: `Handlers -- パス/ロール認可チェック --> Authz` は、tree/content/image/audio/upload/lock/stage/diffなどパスが絡む全てのVCS系エンドポイントが通過するゲート。以前はこの経路自体が存在せず、認証さえ通れば誰でも任意のパスを読み書きできた(§10参照)。
 
 ## 3. コンポーネント詳細
 
@@ -96,7 +105,7 @@ graph TB
   - **動的ノードエディタ**: ディレクトリ/ロールノードを自由に追加・削除可能(既定の5+3ノード構成は初期値であり上限ではない)。ノード削除時は関連する接続も連鎖的に除去、`QSettings`ではなくJSON設定ファイルへ永続化
   - **権限グラフのApply**: ログインしてlorehub-apiへ `PUT /api/access-control/entries` を送信し、ノードエディタの権限グラフを実サーバーへ反映(パスごとのマージ、対象外パスは無傷)。動的追加したノードでも同じパイプラインで動作確認済み
   - **セッション自動延長**: `PermissionConfigController` も同じく25分ごとに `POST /api/auth/refresh`(Client側と全く同じパターン、Apply機能のログインセッションを維持)
-- **今後**: Qt Test基盤の整備(lorehub-api/lorehub-webには自動テストスイートを追加済みだが、2つのデスクトップアプリは未整備。意図的に別タスクとして切り出し中)
+- **今後**: なし(Qt Test基盤も含め一通り完了。§9.2参照)
 
 ## 4. データフロー: 認証シーケンス
 
@@ -207,6 +216,55 @@ classDiagram
     AppState "1" --> "*" AuditLogEntry
 ```
 
+一方、VCSデータ(`Repository`本体・コミット・ブランチ・ツリー・ファイル実体)は上記`AppState`の外、実コンテンツアドレス方式の正規化SQLテーブルとして保存される。中心にあるのは`file_blobs`(SHA-256ハッシュをキーとする実バイト列のメタデータ)で、コミット・ツリースナップショットはどちらもこのハッシュを指すことで内容を共有・重複排除する。
+
+```mermaid
+erDiagram
+    REPOSITORIES ||--o{ FILE_BLOBS : "所有 blob store"
+    REPOSITORIES ||--o{ BRANCHES : "所有"
+    REPOSITORIES ||--o{ COMMITS : "所有"
+    COMMITS ||--o{ COMMIT_FILES : "変更パス一覧"
+    COMMITS ||--o{ TREE_ENTRIES : "ツリースナップショット全体"
+    COMMITS |o--o| COMMITS : "parent_hash 単一親のみ"
+    BRANCHES }o--|| COMMITS : "head_commit_hash"
+    FILE_BLOBS ||--o{ COMMIT_FILES : "content_hash"
+    FILE_BLOBS ||--o{ TREE_ENTRIES : "content_hash"
+
+    REPOSITORIES {
+        string slug PK
+        string visibility
+    }
+    FILE_BLOBS {
+        string repo_slug FK
+        string content_hash PK
+        int size_bytes
+    }
+    BRANCHES {
+        string repo_slug FK
+        string name PK
+        string head_commit_hash FK
+    }
+    COMMITS {
+        string repo_slug FK
+        string hash PK
+        string parent_hash FK
+        string branch_name
+    }
+    COMMIT_FILES {
+        string commit_hash FK
+        string path PK
+        string change_type
+        string content_hash FK
+    }
+    TREE_ENTRIES {
+        string commit_hash FK
+        string path PK
+        string content_hash FK
+    }
+```
+
+図中のキーは代表列のみ(実際の主キーは全テーブルで`repo_slug`との複合キー)。`current_branch`(リポジトリごとの現在ブランチ名)・`staged_content`(未コミットの作業コピー、パスごとに現在値1つ)・`pending_changes`(ステージ済み変更、git indexに相当)・`file_locks`(コミット履歴とは独立した排他ロック)も同じ`repositories`配下に存在するが、可読性のため図からは省略した。正確なカラム・制約・インデックスは `lorehub-api/migrations/0001_vcs_schema.sql` を一次情報源とする。全テーブルの`repo_slug`外部キーは`ON DELETE CASCADE`で宣言されており、`repositories`から1行削除するだけで関連する全VCSデータが原子的に消える(以前は`Vec<Repository>`+8個の独立したHashMapという構造で、リポジトリ削除がそのうち3箇所しかクリーンアップせず残り5箇所を永久にオーファン化させていた)。
+
 **永続化方式**: 2方式が併存する。`pull_requests`/`access_entries`/`org_members`/`audit_log`/`sessions`など非VCSデータは、フィールドごとに1レコードのJSONブロブを `kv_store` テーブルへ保存する方式(`db.rs`)——複雑なクエリはできないが、Rust側の構造体をそのまま `serde_json` でシリアライズでき、スキーマ移行の手間がない。今回のVCS再設計ではスコープ外と判断し、そのまま維持している。一方 `Repository`・コミット・ブランチ・ツリースナップショット・ファイル実体(SHA-256コンテンツハッシュ)などVCSデータは正規化SQLテーブル(`repositories`/`commits`/`branches`/`tree_entries`/`file_blobs`など、スキーマは `lorehub-api/migrations/0001_vcs_schema.sql` が一次情報源)として保存され、もはや `AppState` の一部ではなく `repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が直接読み書きする。
 
 ## 6. LoreHub Web サイトマップ
@@ -255,6 +313,9 @@ timeline
     Phase 6 GitHubレベル機能拡張 : リポジトリ設定(rename/削除) : Client コミット履歴表示(並行作業) : Server Admin 権限設定永続化(並行作業)
     Phase 7 アーキテクチャギャップの解消 : Client Fork並み実操作(commit/branch/stage) : Server Admin実プロセス制御(Lore Server) : タブ視認性修正 : 権限グラフのApply連携 : Clientバイナリdiffビューア : Sparse Workspace Manager
     Phase 8 残課題の完全消化 : Server Adminノードエディタ動的化 : MinIO実機検証 : リフレッシュトークン基盤 : Clientテキスト/音声プレビュー : Web実チャンクストリーミング : 自動テストスイート(lorehub-api/web) : Clientテキスト/音声アップロード : デスクトップ側セッション自動延長
+    Phase 9 セキュリティ・アカウント・運用基盤 : Qt Test導入(Client/Server Admin) : パスACL実強制+RBAC : セキュアCookie/CORS/ボディ上限/ログインレート制限 : パスワード変更/招待/忘れた/リセット : Docker Compose+CI+ヘルスチェック : Prometheusメトリクス+構造化ログ : デスクトップインストーラー(NSIS/CPack)
+    Phase 10 VCS実装の全面再設計 : sqlxマイグレーション基盤 : リポジトリの実テーブル化 : SHA-256コンテンツアドレスblob+重複排除 : ブランチが実際に分岐するコミット/ツリー : 実diffエンドポイント(similar crate) : 死んだコード削除+旧kv_store一括削除
+    Phase 11 実デプロイでのクロスドメイン修正 : Vercel+Cloudflareトンネルで実デプロイ : Next.js rewrites()によるAPIプロキシ : NEXT_PUBLIC_USE_API_PROXYフラグへの置換
 ```
 
 ## 9. マルチエージェント並行開発
@@ -293,18 +354,89 @@ flowchart TD
 
 ### 9.2 自動テストスイート
 
-Phase 8で、これまで一切存在しなかった自動テストを `lorehub-api` と `lorehub-web` に整備した(2つのQtデスクトップアプリのテスト基盤は意図的に別タスクとして切り出し中)。
+Phase 8で `lorehub-api` と `lorehub-web` に、Phase 9で2つのQtデスクトップアプリにも自動テストを整備し、4系統全てに自動テストが揃った。
 
-- **lorehub-api**: `tower::ServiceExt::oneshot` で実際の `Router` をTCPバインド無しにin-processで駆動する統合テスト、39件。各テストが独立した `sqlite://:memory:` DBと `state::seed()` を持ち、実DBファイルには一切触れない(`cargo test`並列実行下でのテスト間汚染を防ぐ設計)。認証(ログイン/リフレッシュローテーション/失効)・リポジトリCRUD・VCS書き込みフロー・アクセス制御マージ・アップロードのリポジトリ単位分離(過去のバグクラスの回帰テスト)・HTTP Range(206/416)をカバー。
-- **lorehub-web**: Vitestを新規導入(node環境、DOM操作なしのため jsdom不要)、22件。`fetchWithRefresh` の401リトライロジック(無限ループしないこと・同時失敗時のリフレッシュ共有まで含む)、`proxy.ts` のCookie合成ヘルパー、`AudioPlayer` の時刻フォーマットをカバー。
+- **lorehub-api**: `tower::ServiceExt::oneshot` で実際の `Router` をTCPバインド無しにin-processで駆動する統合テスト、118件(Phase 8時点の39件から、Phase 9のセキュリティ強化・アカウントライフサイクル・Phase 10のVCS再設計それぞれの追加分を含めて増加)。各テストが独立した `sqlite://:memory:` DBと `state::seed()` を持ち、実DBファイルには一切触れない(`cargo test`並列実行下でのテスト間汚染を防ぐ設計)。認証(ログイン/リフレッシュローテーション/失効)・リポジトリCRUD・パスACL解決(祖先探索の優先順位)・パスワード変更/招待/忘れた/リセットの各フロー・ログインレート制限・ボディサイズ上限・コンテンツアドレスblobの重複排除・ブランチ分岐後の`GET /tree`差異・実diffエンドポイント・HTTP Range(206/416)をカバー。
+- **lorehub-web**: Vitest(node環境、DOM操作なしのため jsdom不要)、22件。`fetchWithRefresh` の401リトライロジック(無限ループしないこと・同時失敗時のリフレッシュ共有まで含む)、`proxy.ts` のCookie合成ヘルパー、`AudioPlayer` の時刻フォーマットをカバー。
+- **LoreForge Client / Server Admin**: Phase 9でQt Testを導入(`LoreForgeClientTests`/`LoreForgeServerAdminTests`、`ctest`で実行)。GUI操作の自動化はこのサンドボックスでは信頼できないため対象外とし、`RepositoryTreeModel`のツリー構築・Sparse Workspace Managerのinclude/exclude/cascade-exclude、`PermissionConfigController`のJSON永続化ラウンドトリップなど、GUI非依存のモデル/コントローラロジックのみを対象にしている(詳細はTECHNICAL_REFERENCE.md §7)。
 
-**独立再検証で確認**: `cargo test`/`npm run test` とも全件パスをクリーンビルドから再現、テストが実DBファイル(`lorehub.db`)を作成しないことも確認済み。
+**独立再検証で確認**: `cargo test`/`npm run test`/`ctest`(両デスクトップアプリ)とも全件パスをクリーンビルドから再現、`cargo test`が実DBファイル(`lorehub.db`)を作成しないことも確認済み。
 
-## 10. 現在の状態(このドキュメント作成時点)
+## 10. 認可とセキュリティ
 
-- ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)・**実チャンクストリーミング(HTTP Range)** まで完了、lint/build/test検証済み
-- ✅ lorehub-api: 全エンドポイント認証必須化、SQLite永続化、リポジトリのCRUD完備、VCS書き込みAPI(commit/branch/stage)完備、access-control Apply対応、アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証、**HTTP Range配信**、**統合テスト39件**
-- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**テキスト/音声プレビュー**、**画像/テキスト/音声の実アセットアップロード→自動ステージング**、Sparse Workspace Manager、**セッション自動延長(25分ごとのプロアクティブrefresh)**まで完備
-- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、ノードエディタでのディレクトリ/ロールの動的追加・削除、タブ視認性修正、MinIOのDocker制御(実機検証済み)、**セッション自動延長**まで完備
-- ✅ lorehub-web: SSR経路(`proxy.ts`)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応、**Vitestによる自動テスト22件**
-- ⏳ 未着手: LoreForge Client/Server AdminのQt Test自動テスト基盤整備、Clientでの3Dモデルアセットアップロード(実ジオメトリローダーが存在しないため意図的に対象外)
+VCSデータの実データ化(§5)に先立ち、公開デプロイに耐える認可・セキュリティ層をPhase 9で整備した。
+
+### 10.1 パスACLの実強制(`authz.rs`)
+
+`access_entries`(パス別の権限設定)自体はPhase 1から存在したが、Phase 9まで `/api/access-control/entries*` のCRUDハンドラ以外どこからも参照されていなかった——設定画面は動くのに、認証さえ通れば誰でも任意のパスを読み書き・ロックできるハリボテだった。`check_path_permission` が唯一の解決ロジックとして、パスが絡む全ハンドラ(tree/content/image/audio/upload/lock/stage/diff)から呼ばれるようになった。
+
+```mermaid
+flowchart TD
+    A["要求パス + 必要な権限レベル"] --> B{"OwnerまたはAdmin?"}
+    B -->|Yes| Allow["許可"]
+    B -->|No| C["パスの祖先を最も具体的な順に走査<br/>(例: a/b/c.png → a/b/c.png → a/b → a)"]
+    C --> D{"この祖先にエントリがあるか?"}
+    D -->|"No: 祖先が残っている"| C
+    D -->|"No: 祖先を使い切った"| Allow
+    D -->|Yes| E{"principalが一致し<br/>必要な権限を含むか?"}
+    E -->|Yes| Allow
+    E -->|No| Deny["拒否(403)"]
+```
+
+**設計判断**: 「最初に見つかった最も具体的な祖先が勝つ」方式(下位の許可設定が上位の設定を上書きできない、一段階でも具体的な設定があればそれで確定)、かつ「どの階層にも設定が無ければデフォルト許可」——後者は、この機能追加前の事実上の全面公開挙動を壊さないための互換性維持。`access_entries` は`repo_slug`を持たない組織全体のフラットなマップのままである点も意図的(Server Adminのノードエディタ・LoreHub WebのACL画面のどちらもリポジトリ単位のACLという概念を持たないため——詳細はTECHNICAL_REFERENCE.md §4.1)。
+
+### 10.2 RBAC(ロールベースの組織操作ゲート)
+
+パスACLとは独立に、組織そのものを構成する操作——リポジトリ削除、メンバーのロール変更、アクセス制御グラフの一括Apply、メンバー招待の作成/一覧/取り消し——は `is_owner_or_admin(user)` でOwner/Adminロールのみに制限される。「どのファイルを触れるか」(ACL)と「組織構成を変更できるか」(RBAC)は目的の異なる別レイヤーの認可であり、意図的に分離されている。
+
+### 10.3 ネットワークレベルの防御
+
+| 対策 | 内容 |
+|---|---|
+| セキュアCookie | `Secure`属性つきCookieがデフォルト。`LOREHUB_INSECURE_COOKIES=true`を明示しない限りローカル平文HTTPでもデフォルトは安全側に倒れる |
+| CORSオリジン制限 | `LOREHUB_WEB_ORIGIN`で指定した単一オリジンのみ許可(`allow_credentials(true)`のためワイルドカード不可) |
+| リクエストボディ上限 | `LOREHUB_MAX_BODY_BYTES`(既定48MiB)、超過時`413` |
+| ログインのレート制限 | 送信元IP単位、バースト8回+60秒に1回補充(`tower_governor`)。メールアドレス単位ではない設計——攻撃者が他人のメールアドレスへの失敗リクエストでアカウントをロックできてしまう問題を避けるため |
+
+詳細な環境変数・デフォルト値はTECHNICAL_REFERENCE.md §2.1/§4.2を参照。
+
+## 11. デプロイアーキテクチャ
+
+Phase 9で、それまで存在しなかった「実際に公開デプロイする」ためのインフラ(Docker Compose・CI・観測性)を整備した。その後Phase 11で実際にVercel + Cloudflare Quick Tunnelへデプロイし、そこで見つかったクロスドメインCookie問題を修正した。
+
+```mermaid
+graph LR
+    Browser2["ブラウザ"]
+    subgraph Compose["docker compose up"]
+        WebC["lorehub-web コンテナ<br/>:3000"]
+        ApiC["lorehub-api コンテナ<br/>:4000"]
+        Vol[("named volume<br/>/data — db + blobs")]
+    end
+    Browser2 -- "localhost:3000" --> WebC
+    Browser2 -- "localhost:4000" --> ApiC
+    WebC -- "API_INTERNAL_URL<br/>(Docker内部DNS)" --> ApiC
+    ApiC --> Vol
+
+    subgraph Cross["クロスドメイン配置(例: Vercel + トンネル)"]
+        WebV["lorehub-web<br/>(例: Vercel)"]
+        ApiV["lorehub-api<br/>(例: Cloudflare Quick Tunnel)"]
+    end
+    Browser3["ブラウザ"] -- "/api/... (同一オリジン)" --> WebV
+    WebV -- "rewrites()でサーバーサイド転送<br/>API_INTERNAL_URL" --> ApiV
+```
+
+**ローカル/Compose**: ブラウザは`lorehub-web`/`lorehub-api`どちらも同一ホスト名(`localhost`、ポート違いのみ)経由でアクセスするため、`lorehub-api`が発行するセッションCookieは問題なく機能する。永続データは名前付きボリューム1つに`lorehub.db`(SQLite)と`blobs/`(コンテンツアドレスファイル実体)の両方が入る——バックアップは両方が対象(DEPLOYMENT.mdのバックアップ節参照)。
+
+**クロスドメイン配置(実デプロイで発見)**: `lorehub-web`をVercelに、`lorehub-api`を別ドメイン(この検証ではCloudflare Quick Tunnel——アカウント作成不要で無料、再起動のたびにランダムな`*.trycloudflare.com`URLになる制約はこのプロトタイプ段階では許容)に置くと、APIが発行するセッションCookieはAPI自身のドメインにしか保存されず、フロントエンドのドメインへのリクエストには一切送られない——CORSやSameSiteの設定では解決できない、Cookieがそもそもフロントエンドのドメイン下に存在しないため。解決策は「ブラウザにバックエンドの実ドメインを一切見せない」こと: `next.config.ts`の`rewrites()`が`/api/*`をサーバーサイドで`API_INTERNAL_URL`へ転送し、ブラウザが見る`Set-Cookie`は常に`lorehub-web`自身のオリジンのものになる。`NEXT_PUBLIC_USE_API_PROXY=true`がブラウザ側の相対パス切り替えを明示的に指示する(当初`NEXT_PUBLIC_API_URL`を空文字にする方式だったが、ホスティングダッシュボードによっては空文字を確実に保存できず実デプロイで問題が起きたため置き換えた)。**注意**: `rewrites()`はビルド時に評価されるため、`API_INTERNAL_URL`は`npm run build`実行時点で設定済みである必要がある。
+
+**観測性**: `GET /metrics`(Prometheusテキスト形式、method/route/statusごとのリクエスト数+レイテンシヒストグラム)と`GET /api/health`(Dockerの`HEALTHCHECK`が使用する軽量な生存確認、DBアクセスなし)を追加。`tower_http::TraceLayer`は元々配線されていたが実際にはログを一切出力していなかった(デフォルトDEBUGレベルで出力され、デフォルトのINFOフィルタに黙って捨てられていた)というバグをINFOへの引き上げで修正、`LOREHUB_LOG_FORMAT=json`で構造化ログにも対応。デプロイ手順の全体はDEPLOYMENT.mdを参照(本ドキュメントでは重複させない)。
+
+## 12. 現在の状態(このドキュメント作成時点)
+
+- ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)・**実チャンクストリーミング(HTTP Range)**・**アカウントライフサイクル(パスワード変更/招待/忘れた/リセット)** まで完了、lint/build/test検証済み
+- ✅ lorehub-api: 全エンドポイント認証必須化、**パスACL実強制+RBAC**、**セキュアCookie/CORS/ボディ上限/ログインレート制限**、リポジトリのCRUD完備、**実コンテンツアドレス方式VCS(SHA-256・重複排除・分岐するブランチ・実diff)完備**(§5・§10)、access-control Apply対応、アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証、**HTTP Range配信**、**`/api/health`+`/metrics`(Prometheus)**、**統合テスト118件**
+- ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**テキスト/音声プレビュー**、**画像/テキスト/音声の実アセットアップロード→自動ステージング**、Sparse Workspace Manager、**セッション自動延長(25分ごとのプロアクティブrefresh)**、**Qt Test**、**Windowsインストーラー(NSIS/CPack)**まで完備
+- ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、ノードエディタでのディレクトリ/ロールの動的追加・削除、タブ視認性修正、MinIOのDocker制御(実機検証済み)、**セッション自動延長**、**Qt Test**、**Windowsインストーラー(NSIS/CPack)**まで完備
+- ✅ lorehub-web: SSR経路(`proxy.ts`)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応、**Vitestによる自動テスト22件**、**クロスドメイン配置向けAPIプロキシ(`NEXT_PUBLIC_USE_API_PROXY`)**
+- ✅ デプロイ: `docker-compose.yml`(Rust+Next.jsの2サービス)、GitHub Actions CI、Vercel+Cloudflare Quick Tunnelでの実デプロイ経験(クロスドメインCookie問題を含め修正済み)
+- ⏳ 既知の制約: `access_entries`のリポジトリスコープ化(現状は組織全体のフラットなマップ)、コードサイニング証明書(デスクトップインストーラーは未署名)、Clientでの3Dモデルアセットアップロード(実ジオメトリローダーが存在しないため意図的に対象外)

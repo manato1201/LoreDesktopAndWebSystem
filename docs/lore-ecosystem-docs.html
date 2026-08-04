@@ -425,9 +425,12 @@
     <a href="#components">コンポーネント詳細</a>
     <a href="#auth">認証シーケンス</a>
     <a href="#data-model">データモデル</a>
+    <a href="#vcs-model">VCSスキーマ</a>
+    <a href="#security">認可とセキュリティ</a>
     <a href="#sitemap">LoreHub サイトマップ</a>
     <a href="#api">API 一覧</a>
     <a href="#tokens">デザイントークン</a>
+    <a href="#deploy">デプロイ</a>
     <a href="#timeline">開発の歩み</a>
     <a href="#agents">並行エージェント開発</a>
     <a href="#verification">独立再検証</a>
@@ -536,6 +539,7 @@
             <li>リポジトリ設定(rename・削除)</li>
             <li>実チャンクストリーミング(HTTP Range) <span class="badge done">完了</span></li>
             <li>デュアルトークン認証(CSR/SSR透過的リフレッシュ) <span class="badge done">完了</span></li>
+            <li>アカウントライフサイクル(パスワード変更/招待/忘れた/リセット) <span class="badge done">完了</span></li>
           </ul>
         </div>
         <div class="card comp-card">
@@ -550,6 +554,7 @@
             <li>画像/テキスト/音声アップロード→自動ステージング <span class="badge done">完了</span></li>
             <li>Sparse Workspace Manager <span class="badge done">完了</span></li>
             <li>セッション自動延長(25分ごとのプロアクティブrefresh) <span class="badge done">完了</span></li>
+            <li>Qt Test単体テスト + Windowsインストーラー(NSIS/CPack) <span class="badge done">完了</span></li>
           </ul>
         </div>
         <div class="card comp-card">
@@ -562,6 +567,7 @@
             <li>動的ノードエディタ(ディレクトリ/ロールの追加・削除) <span class="badge done">完了</span></li>
             <li>権限グラフの実サーバーApply <span class="badge done">完了</span></li>
             <li>セッション自動延長(25分ごとのプロアクティブrefresh) <span class="badge done">完了</span></li>
+            <li>Qt Test単体テスト + Windowsインストーラー(NSIS/CPack) <span class="badge done">完了</span></li>
           </ul>
         </div>
       </div>
@@ -606,13 +612,9 @@
 
     <section id="data-model">
       <div class="eyebrow">05 / State</div>
-      <h2>データモデル(AppState)</h2>
-      <p class="lede">非VCSデータ(PR一覧・監査ログ・組織メンバー等)は正規化せず、フィールドごとに1つのJSONブロブとして <code>kv_store</code> に保存(意図的なトレードオフ、詳細は技術資料 §5)。VCSデータ(Repository・コミット・ブランチ・ツリー)は実コンテンツアドレス方式の正規化SQLテーブルとして保存。</p>
+      <h2>データモデル(AppState、非VCS)</h2>
+      <p class="lede">PR一覧・監査ログ・組織メンバー・招待・パスワードリセット等の非VCSデータは正規化せず、フィールドごとに1つのJSONブロブとして <code>kv_store</code> に保存(意図的なトレードオフ、詳細は技術資料 §5)。VCSデータ(Repository・コミット・ブランチ・ツリー)は実コンテンツアドレス方式の正規化SQLテーブルとして別管理(次節参照)。</p>
       <div class="model-grid">
-        <div class="card model-card">
-          <div class="name">Repository</div>
-          <ul><li>slug, name, organization</li><li>description, visibility</li><li>sizeLabel, lockedFileCount</li></ul>
-        </div>
         <div class="card model-card">
           <div class="name">PullRequest</div>
           <ul><li>id, repo_slug, status</li><li>diff_files</li><li>comments</li></ul>
@@ -625,7 +627,77 @@
           <div class="name">AuditLogEntry</div>
           <ul><li>actor, action</li><li>target, timestamp</li></ul>
         </div>
+        <div class="card model-card">
+          <div class="name">InviteEntry / PasswordResetEntry</div>
+          <ul><li>email, role, teams</li><li>expiresAt</li></ul>
+        </div>
       </div>
+    </section>
+
+    <section id="vcs-model">
+      <div class="eyebrow">05.5 / VCS</div>
+      <h2>VCSスキーマ(正規化SQLテーブル)</h2>
+      <p class="lede">以前は全リポジトリで共有される静的シードデータでしかなかったコミット/ブランチ/ツリーを、実SHA-256ハッシュ・単一親コミット・重複排除されたコンテンツアドレスblobストレージへ全面再設計した。全ての <code>repo_slug</code> 外部キーが <code>ON DELETE CASCADE</code>——リポジトリ削除1操作で関連データが原子的に全消去される。正確なスキーマは <code>lorehub-api/migrations/0001_vcs_schema.sql</code> を参照。</p>
+      <div class="model-grid">
+        <div class="card model-card">
+          <div class="name">repositories</div>
+          <ul><li>slug (PK)</li><li>visibility</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">file_blobs</div>
+          <ul><li>repo_slug, content_hash (PK)</li><li>size_bytes</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">branches</div>
+          <ul><li>repo_slug, name (PK)</li><li>head_commit_hash → commits</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">commits</div>
+          <ul><li>repo_slug, hash (PK)</li><li>parent_hash(単一親)</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">commit_files</div>
+          <ul><li>commit_hash, path (PK)</li><li>change_type, content_hash</li></ul>
+        </div>
+        <div class="card model-card">
+          <div class="name">tree_entries</div>
+          <ul><li>commit_hash, path (PK)</li><li>content_hash → file_blobs</li></ul>
+        </div>
+      </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        <code>current_branch</code>(現在ブランチ)・<code>staged_content</code>(未コミットの作業コピー)・<code>pending_changes</code>(ステージ済み変更)・<code>file_locks</code>(排他ロック)も同じ<code>repositories</code>配下に存在するが、上のカードでは省略。ファイル実体そのもの(バイト列)はDBの外、ファイルシステム上の <code>blobs/&lt;repo_slug&gt;/&lt;hash&gt;</code> に content-addressed で保存される(<code>blob_store.rs</code>)。
+      </p>
+    </section>
+
+    <section id="security">
+      <div class="eyebrow">05.7 / AuthZ</div>
+      <h2>認可とセキュリティ</h2>
+      <p class="lede"><code>access_entries</code>(パス別ACL)は設定自体は以前から存在したが、実際にはどのハンドラからも参照されず、認証さえ通れば誰でも任意のパスを読み書きできた。<code>authz.rs</code>の<code>check_path_permission</code>がこれを実強制するようになった。</p>
+      <div class="card">
+        <div class="flow">
+          <div class="flow-step">
+            <div class="who">Step 1</div>
+            <div class="what">Owner/Adminロールなら常に許可</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 2</div>
+            <div class="what">パスの祖先を最も具体的な順に走査</div>
+            <div class="note">例: Assets/Characters/hero.fbx → Assets/Characters → Assets</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 3</div>
+            <div class="what">最初にエントリを持つ祖先が確定 — それより上位の祖先は一切参照しない</div>
+          </div>
+          <div class="flow-step">
+            <div class="who">Step 4</div>
+            <div class="what">principalが一致し必要な権限を含むかで許可/拒否</div>
+            <div class="note">どの階層にもエントリが無ければデフォルト許可(既存デモパスの挙動を維持)</div>
+          </div>
+        </div>
+      </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        組織操作(リポジトリ削除・メンバーのロール変更・ACL一括Apply・招待の作成/一覧/取り消し)はこのパスACLとは独立に、Owner/Adminロールのみに制限するRBACゲートを別途通過する。ネットワークレベルでは、既定で<code>Secure</code>属性つきCookie・<code>LOREHUB_WEB_ORIGIN</code>単一オリジンのCORS・リクエストボディ上限(既定48MiB)・ログインの送信元IP単位レート制限(バースト8回+60秒に1回補充)を追加した。
+      </p>
     </section>
 
     <section id="sitemap">
@@ -655,29 +727,37 @@
     <section id="api">
       <div class="eyebrow">07 / Reference</div>
       <h2>主要APIエンドポイント</h2>
-      <p class="lede"><code>POST /api/auth/login</code>/<code>refresh</code> 以外は全て認証必須(<code>require_auth</code>ミドルウェア)。画像/音声/テキストの各GETはHTTP Range対応(206/416)。完全な一覧は技術資料を参照。</p>
+      <p class="lede"><code>POST /api/auth/login</code>/<code>refresh</code>/<code>forgot-password</code>/<code>reset-password</code>/<code>accept-invite</code>、<code>GET /api/health</code>・<code>/metrics</code> 以外は全て認証必須(<code>require_auth</code>ミドルウェア)。パス付きエンドポイントはさらにACL(<code>authz.rs</code>)を通過する必要がある。画像/音声/テキストの各GETはHTTP Range対応(206/416)。完全な一覧は技術資料を参照。</p>
       <div class="card" style="overflow-x:auto;">
         <table class="api">
           <thead><tr><th>Method</th><th>Path</th><th>説明</th></tr></thead>
           <tbody>
-            <tr><td class="method">POST</td><td class="path">/api/auth/login</td><td>ログイン(公開)・2Cookie発行</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/health</td><td>生存確認(公開・DBアクセスなし)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/metrics</td><td>Prometheusメトリクス(公開)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/login</td><td>ログイン(公開)・2Cookie発行・IPレート制限</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/auth/refresh</td><td>リフレッシュトークンをローテーション(公開)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/change-password</td><td>自己サービスのパスワード変更(全セッション失効)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/forgot-password</td><td>パスワードリセットのメール送信要求(公開・常に204)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/reset-password</td><td>リセットトークンで新パスワード設定(公開)</td></tr>
+            <tr><td class="method">GET / POST</td><td class="path">/api/org/invites</td><td>招待の一覧 / 作成(Owner/Admin限定)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/auth/accept-invite</td><td>招待承諾+自動ログイン(公開)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/repositories</td><td>リポジトリ一覧</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories</td><td>リポジトリ作成</td></tr>
             <tr><td class="method">PATCH</td><td class="path">/api/repositories/{slug}</td><td>rename / description / visibility 更新</td></tr>
-            <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(関連PRも削除)</td></tr>
-            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー</td></tr>
-            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/upload</td><td>画像/テキスト/音声アップロード(拡張子で種別推定、リポジトリ単位分離)</td></tr>
+            <tr><td class="method">DELETE</td><td class="path">/api/repositories/{slug}</td><td>リポジトリ削除(Owner/Admin限定、関連データCASCADE削除)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/tree</td><td>ファイルツリー(ブランチ対応)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/diff/{*path}</td><td>2コミット間の行レベルdiff(テキストのみ)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/upload</td><td>画像/テキスト/音声アップロード(SHA-256でblob化、重複排除)</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/lock</td><td>ファイルロック切替</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/tree/stage</td><td>変更をステージ/アンステージ</td></tr>
-            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴</td></tr>
-            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/commits</td><td>ステージ済み変更からコミット作成</td></tr>
+            <tr><td class="method">GET</td><td class="path">/api/repositories/{slug}/commits</td><td>コミット履歴(実SHA-256ハッシュ)</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/commits</td><td>ステージ済み変更から実コミット作成</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/branches</td><td>ブランチ作成</td></tr>
-            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/checkout</td><td>ブランチ切替</td></tr>
+            <tr><td class="method">POST</td><td class="path">/api/repositories/{slug}/checkout</td><td>ブランチ切替(実際にtree/commitsの内容が変わる)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/pulls</td><td>PR一覧</td></tr>
             <tr><td class="method">POST</td><td class="path">/api/pulls/{id}/comments</td><td>PRコメント追加</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/access-control/entries</td><td>権限一覧</td></tr>
-            <tr><td class="method">PUT</td><td class="path">/api/access-control/entries</td><td>権限グラフApply(パス単位マージ)</td></tr>
+            <tr><td class="method">PUT</td><td class="path">/api/access-control/entries</td><td>権限グラフApply(Owner/Admin限定、パス単位マージ)</td></tr>
             <tr><td class="method">GET</td><td class="path">/api/org/audit-log</td><td>監査ログ</td></tr>
           </tbody>
         </table>
@@ -698,6 +778,49 @@
         <div class="swatch"><div class="swatch-fill" style="background:#ffa42b"></div><div class="swatch-meta"><div class="role">warning</div><div class="hex">#ffa42b</div></div></div>
         <div class="swatch"><div class="swatch-fill" style="background:#539df5"></div><div class="swatch-meta"><div class="role">announcement</div><div class="hex">#539df5</div></div></div>
       </div>
+    </section>
+
+    <section id="deploy">
+      <div class="eyebrow">08.5 / Ops</div>
+      <h2>デプロイ・観測性</h2>
+      <p class="lede"><code>docker-compose.yml</code>で<code>lorehub-api</code>・<code>lorehub-web</code>の2サービスを構成。実際にVercel + Cloudflare Quick Tunnelへデプロイした際、クロスドメイン特有のCookie問題を発見・修正した。</p>
+      <div class="grid-3">
+        <div class="card comp-card">
+          <span class="tag">Local / Compose</span>
+          <h3>同一ホスト名配置</h3>
+          <div class="role">localhost:3000 / localhost:4000</div>
+          <ul>
+            <li>ブラウザ視点では同一サイト扱い、Cookieは無条件に機能</li>
+            <li>named volume 1つに <code class="mono">lorehub.db</code> + <code class="mono">blobs/</code> の両方</li>
+            <li><code class="mono">GET /api/health</code> をDockerの<code>HEALTHCHECK</code>が使用</li>
+          </ul>
+        </div>
+        <div class="card comp-card">
+          <span class="tag">Cross-domain</span>
+          <h3>Vercel + トンネル配置</h3>
+          <div class="role">実デプロイで発見した問題</div>
+          <ul>
+            <li>APIのCookieはAPI自身のドメインにしか保存されない</li>
+            <li>CORS/SameSiteでは解決不可(そもそもフロントエンド側にCookieが無い)</li>
+            <li><code class="mono">next.config.ts</code> の <code class="mono">rewrites()</code> でサーバーサイド転送し解決</li>
+            <li><code class="mono">NEXT_PUBLIC_USE_API_PROXY=true</code> でブラウザ側を相対パスへ切替</li>
+          </ul>
+        </div>
+        <div class="card comp-card">
+          <span class="tag">Observability</span>
+          <h3>メトリクス・ログ</h3>
+          <div class="role">運用可視性</div>
+          <ul>
+            <li><code class="mono">GET /metrics</code>(Prometheusテキスト形式)</li>
+            <li>method/route/statusごとのリクエスト数+レイテンシヒストグラム</li>
+            <li><code class="mono">LOREHUB_LOG_FORMAT=json</code> で構造化ログ</li>
+            <li>GitHub Actions CI(cargo test/clippy/fmt + npm build/lint/test)</li>
+          </ul>
+        </div>
+      </div>
+      <p style="max-width:68ch; color:var(--text-secondary); font-size:13.5px; margin-top:14px;">
+        詳細なデプロイ手順・環境変数・バックアップ方法は <code>docs/DEPLOYMENT.md</code>、デスクトップインストーラーのビルドは <code>docs/DESKTOP_PACKAGING.md</code> を参照。
+      </p>
     </section>
 
     <section id="timeline">
@@ -745,10 +868,25 @@
             <div class="t">アーキテクチャギャップの解消</div>
             <ul><li>Client Fork並み実操作</li><li>Server Admin実プロセス制御</li><li>権限グラフApply連携</li><li>バイナリDiffビューア</li><li>Sparse Workspace</li></ul>
           </div>
-          <div class="phase current">
+          <div class="phase">
             <div class="n">Phase 8</div>
-            <div class="t">残課題の完全消化(現在)</div>
+            <div class="t">残課題の完全消化</div>
             <ul><li>ノードエディタ動的化</li><li>MinIO実機検証</li><li>デュアルトークン認証</li><li>テキスト/音声プレビュー・アップロード</li><li>実チャンクストリーミング</li><li>自動テスト39+22件</li><li>デスクトップ側セッション自動延長</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 9</div>
+            <div class="t">セキュリティ・アカウント・運用基盤</div>
+            <ul><li>Qt Test導入</li><li>パスACL実強制+RBAC</li><li>セキュアCookie/CORS/レート制限</li><li>パスワード変更/招待/リセット</li><li>Docker Compose+CI</li><li>Prometheusメトリクス</li><li>デスクトップインストーラー</li></ul>
+          </div>
+          <div class="phase">
+            <div class="n">Phase 10</div>
+            <div class="t">VCS実装の全面再設計</div>
+            <ul><li>sqlxマイグレーション基盤</li><li>SHA-256コンテンツアドレスblob</li><li>ブランチが実際に分岐</li><li>実diffエンドポイント</li><li>kv_store一枚岩からの脱却</li></ul>
+          </div>
+          <div class="phase current">
+            <div class="n">Phase 11</div>
+            <div class="t">実デプロイでのクロスドメイン修正(現在)</div>
+            <ul><li>Vercel+Cloudflareトンネルで実デプロイ</li><li>Next.js rewrites()プロキシ</li><li>NEXT_PUBLIC_USE_API_PROXY</li></ul>
           </div>
         </div>
       </div>
@@ -816,16 +954,18 @@
       <div class="eyebrow">12 / Now</div>
       <h2>現在の状態</h2>
       <div class="status-list">
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除) + 実チャンクストリーミング(HTTP Range)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — 全エンドポイント認証必須化・SQLite永続化・VCS書き込みAPI・access-control Apply・統合テスト39件</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreHub Web — 8画面 + 認証 + 永続化 + リポジトリ設定(rename/削除) + 実チャンクストリーミング(HTTP Range) + アカウントライフサイクル(パスワード変更/招待/忘れた/リセット)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — パスACL実強制(authz.rs) + RBAC + セキュアCookie/CORS/レート制限、統合テスト118件</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — VCS実装の全面再設計: SHA-256コンテンツアドレスblob・重複排除・分岐するブランチ・実diffエンドポイント・正規化SQLテーブル + CASCADE削除</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api / lorehub-web — デュアルトークン認証(アクセス30分+リフレッシュ7日、SSR/CSR両経路で透過的リフレッシュ)</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-web — Vitestによる自動テスト22件</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-api — Docker Compose・GitHub Actions CI・/api/health・/metrics(Prometheus)・構造化ログ</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">lorehub-web — Vitestによる自動テスト22件 + クロスドメイン配置向けAPIプロキシ(NEXT_PUBLIC_USE_API_PROXY)</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Fork並み実操作(コミット/ブランチ/ステージング)</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — バイナリDiffビューア + テキスト/音声プレビュー + 画像/テキスト/音声アップロード</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager + セッション自動延長</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Client — Sparse Workspace Manager + セッション自動延長 + Qt Test + Windowsインストーラー</span></div>
         <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — Lore Server実プロセス制御 + 権限グラフApply + タブ視認性修正 + 動的ノードエディタ + セッション自動延長</span></div>
-        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(実Docker環境で動作確認済み)</span></div>
-        <div class="status-row"><span class="badge pending">未着手</span><span class="txt">LoreForge Client / Server Admin — Qt Test自動テスト基盤(意図的に別タスクとして切り出し)</span></div>
+        <div class="status-row"><span class="badge done">完了</span><span class="txt">LoreForge Server Admin — MinIO Docker制御(実Docker環境で動作確認済み) + Qt Test + Windowsインストーラー</span></div>
+        <div class="status-row"><span class="badge pending">既知の制約</span><span class="txt">access_entriesのリポジトリスコープ化・デスクトップインストーラーのコード署名(証明書未取得)・Client 3Dモデルアップロード</span></div>
       </div>
     </section>
 
