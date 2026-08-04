@@ -7,11 +7,14 @@ mod db;
 mod email;
 mod handlers;
 mod image_assets;
+mod lock_store;
 mod models;
 mod repo_store;
 mod state;
 #[cfg(test)]
 mod tests;
+mod vcs_seed;
+mod vcs_store;
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -412,6 +415,12 @@ async fn main() {
     // Must run before `load_state`/`state::seed()` below — see its doc
     // comment. Idempotent: a no-op once the `repositories` table has rows.
     db::migrate_or_seed_repositories(&pool).await;
+    // Backfills real commit/branch/tree history for any seeded repository
+    // that doesn't have any yet (a genuinely fresh `lorehub.db`). A no-op on
+    // every subsequent restart, once each seeded repo has real commits — see
+    // `vcs_seed`'s module doc comment.
+    let blob_base_dir = std::path::PathBuf::from(blob_store::BASE_DIR);
+    vcs_seed::seed_demo_history(&pool, &blob_base_dir).await;
 
     let initial_state = match db::load_state(&pool).await {
         Some(state) => {
@@ -430,6 +439,7 @@ async fn main() {
         initial_state,
         pool,
         email::SmtpConfig::from_env(),
+        blob_base_dir,
     ));
     let app = build_router(shared_state, RouterConfig::from_env());
 

@@ -45,6 +45,35 @@ pub fn blob_path(base_dir: &Path, repo_slug: &str, content_hash: &str) -> PathBu
 /// Otherwise writes to a temp file in the same directory and atomically
 /// renames it into place, so a crash or concurrent reader never observes a
 /// partially-written blob.
+///
+/// Retries up to [`MAX_SAVE_ATTEMPTS`] times if the parent directory
+/// disappears mid-write (`NotFound` from the write or rename step) rather
+/// than surfacing it as a hard error. This can genuinely happen: a
+/// repository's blob directory can be removed out from under an in-flight
+/// write by a concurrent `DELETE /api/repositories/{slug}` (see
+/// `handlers::delete_repository`'s filesystem-cleanup step) landing between
+/// this function's own `create_dir_all` and its `write`/`rename` — recreating
+/// the directory and retrying is simpler and more robust than trying to
+/// serialize upload and delete against each other.
+async fn save_blob_attempt(
+    parent: &Path,
+    target: &Path,
+    content_hash: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    fs::create_dir_all(parent).await?;
+
+    let suffix: u64 = rand::thread_rng().r#gen();
+    let tmp_path = parent.join(format!("{content_hash}.tmp-{suffix:016x}"));
+
+    fs::write(&tmp_path, bytes).await?;
+    fs::rename(&tmp_path, target).await?;
+
+    Ok(())
+}
+
+const MAX_SAVE_ATTEMPTS: u32 = 3;
+
 pub async fn save_blob(
     base_dir: &Path,
     repo_slug: &str,
@@ -62,15 +91,18 @@ pub async fn save_blob(
     let parent = target
         .parent()
         .expect("blob_path always has a parent directory");
-    fs::create_dir_all(parent).await?;
 
-    let suffix: u64 = rand::thread_rng().r#gen();
-    let tmp_path = parent.join(format!("{content_hash}.tmp-{suffix:016x}"));
-
-    fs::write(&tmp_path, bytes).await?;
-    fs::rename(&tmp_path, &target).await?;
-
-    Ok(())
+    let mut last_err = None;
+    for _ in 0..MAX_SAVE_ATTEMPTS {
+        match save_blob_attempt(parent, &target, content_hash, bytes).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_err.expect("loop runs at least once"))
 }
 
 /// Reads back the bytes previously written by [`save_blob`] for
