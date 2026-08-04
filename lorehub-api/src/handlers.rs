@@ -4,6 +4,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
+use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 
 use crate::auth;
@@ -916,6 +917,198 @@ pub async fn get_audio(
         Some(bytes) => ranged_bytes_response(&headers, "audio/wav", bytes),
         None => not_found("no audio content for this file"),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Either side of a text diff (the "from" or "to" blob) larger than this is
+/// refused with a 400 rather than diffed — mirrors `main.rs`'s
+/// `DEFAULT_MAX_BODY_BYTES` habit of a documented, concrete magic number
+/// rather than an unbounded computation. 5 MiB is comfortably larger than
+/// any legitimate hand-authored text asset this app's `file_kind_for_path`
+/// classifies as `"text"` (source files, configs, localization tables) while
+/// keeping an in-memory `similar::TextDiff` computation (which holds both
+/// full files plus the computed line table at once) bounded and fast; a
+/// multi-megabyte "text" file is far more likely to be a mis-tagged binary
+/// blob than a real diff target.
+const MAX_DIFFABLE_FILE_BYTES: usize = 5 * 1024 * 1024;
+
+/// `GET /api/repositories/{slug}/diff/{*path}?from={commitHash}&to={commitHash}`
+/// — computes a real line-level diff of `path` between two commits, per the
+/// VCS redesign plan's "新規diffエンドポイント" section. Deliberately
+/// independent of the existing PR-diff machinery (`PullRequest.changed_files`
+/// / `PrDiffFile`) — see `models::FileDiff`'s doc comment for why.
+///
+/// Resolution:
+/// 1. Repo must exist (404) and the caller must have `Read` on `path` (403),
+///    same gate as `get_file_content`/`get_image`/`get_audio`.
+/// 2. Both `from` and `to` query params are required (400 if either is
+///    missing/empty).
+/// 3. Both must name a real commit for this repo (404 if either doesn't) —
+///    checked directly against `commits` via `vcs_store::commit_exists`,
+///    NOT inferred from an empty `tree_entries` lookup: a real commit
+///    legitimately has zero `tree_entries` rows for one specific path (the
+///    path simply didn't exist yet/anymore at that point in history), which
+///    is a normal state the added/deleted logic below handles, not a 404.
+/// 4. `path`'s `content_hash` is resolved independently at each commit.
+///    Present at neither -> 404 (nothing to diff, at any point in the
+///    requested range). Otherwise: present in `to` only -> `added`; present
+///    in `from` only -> `deleted`; present in both and equal -> `unchanged`;
+///    present in both and different -> `modified`.
+/// 5. `isBinary` comes from `vcs_store::file_kind_for_path` — only the
+///    `"text"` kind is diffable.
+/// 6. `lines` is populated only for a non-binary `modified` diff (both blobs
+///    loaded via `blob_store::load_blob` and run through
+///    `similar::TextDiff::from_lines`); every other case (`added`/`deleted`/
+///    `unchanged`, or any binary kind regardless of `change_type`) reports
+///    `lines: null`, per the plan.
+pub async fn get_diff(
+    State(ctx): State<SharedState>,
+    axum::Extension(user): axum::Extension<OrgMember>,
+    Path((slug, path)): Path<(String, String)>,
+    Query(query): Query<DiffQuery>,
+) -> Response {
+    if !repo_store::exists(&ctx.db, &slug).await {
+        return not_found("repository not found");
+    }
+
+    let state = ctx.read().await;
+    if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
+        drop(state);
+        return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
+    }
+    drop(state);
+
+    let Some(from) = query.from.filter(|s| !s.is_empty()) else {
+        return bad_request("'from' query parameter is required");
+    };
+    let Some(to) = query.to.filter(|s| !s.is_empty()) else {
+        return bad_request("'to' query parameter is required");
+    };
+
+    if !vcs_store::commit_exists(&ctx.db, &slug, &from).await {
+        return not_found("unknown commit hash for 'from'");
+    }
+    if !vcs_store::commit_exists(&ctx.db, &slug, &to).await {
+        return not_found("unknown commit hash for 'to'");
+    }
+
+    let from_content_hash =
+        vcs_store::resolve_content_hash_at_commit(&ctx.db, &slug, &from, &path).await;
+    let to_content_hash =
+        vcs_store::resolve_content_hash_at_commit(&ctx.db, &slug, &to, &path).await;
+
+    let change_type = if from_content_hash.is_none() && to_content_hash.is_none() {
+        return not_found("path not found at either commit");
+    } else if from_content_hash.is_none() {
+        FileDiffChangeType::Added
+    } else if to_content_hash.is_none() {
+        FileDiffChangeType::Deleted
+    } else if from_content_hash == to_content_hash {
+        FileDiffChangeType::Unchanged
+    } else {
+        FileDiffChangeType::Modified
+    };
+
+    let is_binary = vcs_store::file_kind_for_path(&path) != "text";
+
+    let lines = if !is_binary && change_type == FileDiffChangeType::Modified {
+        // Both present and different — validated by the change_type match
+        // above (`Modified` is only reached when both hashes are `Some` and
+        // unequal).
+        let from_hash = from_content_hash
+            .as_deref()
+            .expect("Modified implies from_content_hash is Some");
+        let to_hash = to_content_hash
+            .as_deref()
+            .expect("Modified implies to_content_hash is Some");
+
+        let old_bytes = match crate::blob_store::load_blob(&ctx.blob_base_dir, &slug, from_hash)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::error!(
+                    repo_slug = %slug,
+                    path = %path,
+                    content_hash = %from_hash,
+                    error = %err,
+                    "tree_entries referenced a content hash with no blob on disk"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "failed to load file content for diff" })),
+                )
+                    .into_response();
+            }
+        };
+        let new_bytes = match crate::blob_store::load_blob(&ctx.blob_base_dir, &slug, to_hash).await
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::error!(
+                    repo_slug = %slug,
+                    path = %path,
+                    content_hash = %to_hash,
+                    error = %err,
+                    "tree_entries referenced a content hash with no blob on disk"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "failed to load file content for diff" })),
+                )
+                    .into_response();
+            }
+        };
+
+        if old_bytes.len() > MAX_DIFFABLE_FILE_BYTES || new_bytes.len() > MAX_DIFFABLE_FILE_BYTES {
+            return bad_request(&format!(
+                "file too large to diff (max {MAX_DIFFABLE_FILE_BYTES} bytes per side)"
+            ));
+        }
+
+        let old_text = String::from_utf8_lossy(&old_bytes);
+        let new_text = String::from_utf8_lossy(&new_bytes);
+        let diff = TextDiff::from_lines(old_text.as_ref(), new_text.as_ref());
+
+        Some(
+            diff.iter_all_changes()
+                .map(|change| {
+                    let kind = match change.tag() {
+                        ChangeTag::Equal => FileDiffLineType::Context,
+                        ChangeTag::Delete => FileDiffLineType::Remove,
+                        ChangeTag::Insert => FileDiffLineType::Add,
+                    };
+                    let text = change
+                        .to_string_lossy()
+                        .trim_end_matches(['\n', '\r'])
+                        .to_string();
+                    FileDiffLine {
+                        kind,
+                        text,
+                        old_line: change.old_index().map(|i| (i + 1) as u32),
+                        new_line: change.new_index().map(|i| (i + 1) as u32),
+                    }
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    Json(FileDiff {
+        path,
+        from_hash: from,
+        to_hash: to,
+        change_type,
+        is_binary,
+        lines,
+    })
+    .into_response()
 }
 
 pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {

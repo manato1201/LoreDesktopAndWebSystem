@@ -41,6 +41,7 @@ mod authz;
 mod blob_dedup;
 mod body_limit;
 mod change_password;
+mod diff;
 mod health;
 mod invites;
 mod metrics;
