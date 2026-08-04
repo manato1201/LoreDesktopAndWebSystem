@@ -105,3 +105,60 @@ async fn insert_succeeds_once_referenced_repository_exists() {
     let count: i64 = row.get("count");
     assert_eq!(count, 1);
 }
+
+/// `db::cleanup_legacy_kv_store_keys` (Phase 6) must delete every stale row
+/// left behind by pre-redesign `save_all`/`save_blob` calls under the old
+/// `AppState.tree`/`commits`/`branches`/`current_branch`/`pending_changes`/
+/// `uploaded_images`/`uploaded_text`/`uploaded_audio` fields and the old
+/// `repositories`/`seeded_repo_slugs` identity blobs — while leaving any
+/// other `kv_store` row (still-live keys like `org_members`, plus an
+/// unrelated key) untouched.
+#[tokio::test]
+async fn cleanup_legacy_kv_store_keys_removes_only_dead_keys() {
+    let pool = test_pool().await;
+
+    let legacy_keys = [
+        "tree",
+        "commits",
+        "branches",
+        "current_branch",
+        "pending_changes",
+        "uploaded_images",
+        "uploaded_text",
+        "uploaded_audio",
+        "repositories",
+        "seeded_repo_slugs",
+    ];
+    for key in legacy_keys {
+        sqlx::query("INSERT INTO kv_store (key, value) VALUES (?1, '{}')")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .expect("seed stale legacy kv_store row");
+    }
+    sqlx::query("INSERT INTO kv_store (key, value) VALUES ('org_members', '[]')")
+        .execute(&pool)
+        .await
+        .expect("seed live kv_store row");
+
+    crate::db::cleanup_legacy_kv_store_keys(&pool).await;
+
+    for key in legacy_keys {
+        let row = sqlx::query("SELECT 1 FROM kv_store WHERE key = ?1")
+            .bind(key)
+            .fetch_optional(&pool)
+            .await
+            .expect("query kv_store");
+        assert!(row.is_none(), "legacy key {key:?} should have been deleted");
+    }
+
+    let row = sqlx::query("SELECT 1 FROM kv_store WHERE key = 'org_members'")
+        .fetch_optional(&pool)
+        .await
+        .expect("query kv_store");
+    assert!(row.is_some(), "live key org_members should be untouched");
+
+    // Calling it again (simulating a second server restart) must not error —
+    // a DELETE on rows that no longer exist is a no-op.
+    crate::db::cleanup_legacy_kv_store_keys(&pool).await;
+}

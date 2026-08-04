@@ -57,6 +57,8 @@ graph TB
 
 **現状の実装範囲の注記**: `ServerAdmin → ServerProc`(実プロセス起動/停止/PID・メモリ監視)、`ServerAdmin → Handlers`(権限グラフのApply)、`ServerAdmin → Docker` のMinIO制御(`docker run`/`stop`/`ps`/`stats`)はすべて実データ・実Docker環境で動作確認済み(コンテナの起動・ポートマッピング・`docker stats`による実CPU/メモリ取得・停止まで実機検証)。LoreHub WebとLoreForge Clientはどちらも同一の `lorehub-api` に接続しており、片方で作った変更がもう片方にリアルタイムで反映されることを確認済み。
 
+**書き込み経路についての注記(VCS再設計後)**: 上図の `AppState -- save_blob / load_state --> DB` という経路は、PR一覧・アクセス制御・組織メンバー・監査ログ・セッションなど非VCSデータにのみ適用される。リポジトリ・コミット・ブランチ・ファイルツリー・ロックなどVCSデータは `AppState` を経由せず、`repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が実コンテンツアドレス方式の正規化SQLテーブルへ直接読み書きする(§5参照)。
+
 ## 3. コンポーネント詳細
 
 ### 3.1 LoreHub (Web)
@@ -169,15 +171,14 @@ Web(CSR/SSR)は「失効を検知してから直す」リアクティブ方式�
 
 `get_image`/`get_image_before`/`get_audio`/`get_file_content` はいずれも `Range: bytes=<start>-<end>` リクエストヘッダを解釈し、`206 Partial Content`(`Content-Range`/`Accept-Ranges`付き)または範囲外なら `416 Range Not Satisfiable` を返す。`Range`ヘッダが無い場合は従来通り全量を `200` で返す(`Accept-Ranges: bytes` を追加で広告)。`get_file_content` はこの変更に合わせ `{"content": "..."}` のJSON包装をやめ、生の `text/plain; charset=utf-8` バイト列を直接返すよう変更した(JSONドキュメントの一部だけを切り出しても意味が無いため)。
 
-## 5. データモデル (AppState)
+## 5. データモデル (AppState / VCS正規化テーブル)
+
+VCS再設計(本ドキュメント執筆時点で完了済み)により、`Repository`・コミット・ブランチ・ファイルツリーは `AppState` から切り離され、実コンテンツアドレス方式の正規化SQLテーブルへ移った。`AppState` に残るのは非VCSデータのみ。
 
 ```mermaid
 classDiagram
     class AppState {
         RwLock~AppStateInner~
-        +repositories: Vec~Repository~
-        +seeded_repo_slugs: HashSet~String~
-        +commits, branches: per-repo
         +pull_requests: Vec~PullRequest~
         +access_entries: Record~path, AccessEntry[]~
         +members: Vec~OrgMember~
@@ -201,13 +202,12 @@ classDiagram
     class AuditLogEntry {
         +actor, action, target, timestamp
     }
-    AppState "1" --> "*" Repository
     AppState "1" --> "*" PullRequest
     AppState "1" --> "*" OrgMember
     AppState "1" --> "*" AuditLogEntry
 ```
 
-**永続化方式**: フルリレーショナル正規化ではなく、フィールドごとに1レコードのJSONブロブを `kv_store` テーブルへ保存する方式を採用(`db.rs`)。トレードオフとして複雑なクエリはできないが、Rust側の構造体をそのまま `serde_json` でシリアライズでき、スキーマ移行の手間がない。デモ規模のデータ量では十分と判断し、意図的に選択した。
+**永続化方式**: 2方式が併存する。`pull_requests`/`access_entries`/`org_members`/`audit_log`/`sessions`など非VCSデータは、フィールドごとに1レコードのJSONブロブを `kv_store` テーブルへ保存する方式(`db.rs`)——複雑なクエリはできないが、Rust側の構造体をそのまま `serde_json` でシリアライズでき、スキーマ移行の手間がない。今回のVCS再設計ではスコープ外と判断し、そのまま維持している。一方 `Repository`・コミット・ブランチ・ツリースナップショット・ファイル実体(SHA-256コンテンツハッシュ)などVCSデータは正規化SQLテーブル(`repositories`/`commits`/`branches`/`tree_entries`/`file_blobs`など、スキーマは `lorehub-api/migrations/0001_vcs_schema.sql` が一次情報源)として保存され、もはや `AppState` の一部ではなく `repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が直接読み書きする。
 
 ## 6. LoreHub Web サイトマップ
 

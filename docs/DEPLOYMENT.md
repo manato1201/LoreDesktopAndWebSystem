@@ -105,18 +105,38 @@ out of a line rather than scraping free-form text.
 
 ## Backup
 
-The entire durable state of this application is one file:
-`lorehub-api`'s `/data/lorehub.db` inside the named Docker volume created by
-`docker-compose.yml` (`lorehub-db`). Per `lorehub-api/src/db.rs`'s design,
-every piece of application data — repositories, commits, org members,
-sessions, everything — lives in that single SQLite file's `kv_store` table.
-Back up that file (or the volume) and you've backed up the whole database;
-there is nothing else to capture.
+The durable state of this application is **two things**, both inside the
+named Docker volume `docker-compose.yml` mounts at `/data`
+(`lorehub-db`):
+
+- `/data/lorehub.db` — the SQLite database. Non-VCS data (org members,
+  sessions, audit log, PR data, etc.) is stored here as JSON blobs; VCS data
+  (repositories, commits, branches, tree snapshots, file metadata) is stored
+  here as real normalized tables — see `lorehub-api/src/db.rs`'s module doc
+  comment for exactly which is which.
+- `/data/blobs/` — the content-addressed file store the VCS redesign
+  introduced (`lorehub-api/src/blob_store.rs`). Every uploaded/committed
+  file's actual bytes live here as `blobs/{repo_slug}/{hash[..2]}/{hash}`;
+  `lorehub.db`'s `file_blobs`/`tree_entries` rows only hold hashes and
+  metadata pointing into this directory, not the bytes themselves.
+
+**Both are required for a complete backup or restore.** Backing up
+`lorehub.db` alone and losing `blobs/` would leave every `file_blobs`/
+`tree_entries` row pointing at content that no longer exists on disk —
+commits and tree entries would still list correctly, but every file read
+(content/image/audio) referencing that content would fail.
 
 ```bash
-# Example: copy the live database out of the named volume to the host.
+# Example: copy both the database and the blob store out of the named
+# volume to the host (docker compose cp handles directories too).
 docker compose cp lorehub-api:/data/lorehub.db ./lorehub.db.bak
+docker compose cp lorehub-api:/data/blobs ./blobs.bak
 ```
 
-Restoring is the reverse: stop the stack, put the backed-up file back at
-the volume's `/data/lorehub.db`, and start it again.
+Restoring is the reverse: stop the stack, put both `lorehub.db` and the
+`blobs/` directory back at the volume's `/data/lorehub.db` and
+`/data/blobs/`, and start it again. In practice it's simplest to back up
+the whole named volume in one shot rather than the two paths separately —
+e.g. `docker run --rm -v lorehub-db:/data -v "$(pwd)":/backup debian tar
+czf /backup/lorehub-db.tar.gz -C /data .` — since that captures both by
+construction.
