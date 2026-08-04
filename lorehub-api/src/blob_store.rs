@@ -8,16 +8,22 @@
 //! than fit comfortably (256-way fan-out on the hash's first byte) and blobs
 //! are naturally partitioned per repository.
 //!
-//! Not yet called from any handler in this phase — later phases wire
-//! upload/checkout/commit into these functions. `dead_code` is allowed at
-//! the module level for that reason (see `content_hash.rs` for the same
-//! reasoning applied there).
-#![allow(dead_code)]
+//! Wired into the upload/read handlers (`handlers::upload_file`/
+//! `handlers::resolve_uploaded_content`) as of the content-addressed upload
+//! path — see `BASE_DIR` for what `base_dir` is at those call sites.
 
 use std::path::{Path, PathBuf};
 
 use rand::Rng;
 use tokio::fs;
+
+/// The filesystem root every `base_dir` argument in this module resolves
+/// against at the handlers' call sites — the same relative-to-process-CWD
+/// basis `db::connect("lorehub.db")` uses for its bare filename (see that
+/// function's doc comment). In Docker, `WORKDIR /data` (see `Dockerfile`)
+/// means both `lorehub.db` and `./blobs/...` land inside the same mounted
+/// volume with no extra code needed to keep them together.
+pub const BASE_DIR: &str = ".";
 
 /// Returns the on-disk path for `content_hash` within `repo_slug`, rooted at
 /// `base_dir`: `{base_dir}/blobs/{repo_slug}/{content_hash[..2]}/{content_hash}`.

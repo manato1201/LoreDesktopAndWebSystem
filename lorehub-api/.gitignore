@@ -4,6 +4,12 @@
 *.db-shm
 *.db-wal
 
+# Content-addressed blob storage (see src/blob_store.rs). Real filesystem
+# writes, not something `:memory:` covers for the DB side — both `cargo
+# run` and `cargo test` write real files here (relative to CWD, same basis
+# as `lorehub.db`), so this must stay untracked the same way `*.db` is.
+/blobs
+
 # env files (real secrets) — .env.example stays tracked as the template
 .env
 !.env.example

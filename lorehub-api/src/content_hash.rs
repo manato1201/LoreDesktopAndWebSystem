@@ -1,14 +1,11 @@
 //! Content hashing for the content-addressed VCS blob store (see
 //! `blob_store.rs`). A single thin wrapper around `sha2` so every call site
-//! that needs a content hash (upload, stage, commit — wired up in later
-//! phases) goes through one function rather than each reaching for `sha2`
-//! and formatting the digest independently.
+//! that needs a content hash (upload, stage, commit — stage/commit still
+//! land in a later phase) goes through one function rather than each
+//! reaching for `sha2` and formatting the digest independently.
 //!
-//! `sha256_hex` isn't called from any handler yet in this phase (that's
-//! Phase 3+, once uploads start hashing real bytes), so `dead_code` is
-//! allowed at the module level here rather than suppressing it function by
-//! function as later phases add callers.
-#![allow(dead_code)]
+//! Called from `handlers::upload_file` as of the content-addressed upload
+//! path.
 
 use sha2::{Digest, Sha256};
 
