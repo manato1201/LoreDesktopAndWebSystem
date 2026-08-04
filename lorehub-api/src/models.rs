@@ -80,19 +80,6 @@ pub enum TreeNode {
     },
 }
 
-impl TreeNode {
-    pub fn path(&self) -> &str {
-        match self {
-            TreeNode::Directory { path, .. }
-            | TreeNode::Text { path, .. }
-            | TreeNode::Image { path, .. }
-            | TreeNode::Model3d { path, .. }
-            | TreeNode::Audio { path, .. }
-            | TreeNode::Binary { path, .. } => path,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum FileChangeType {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,23 @@ pub struct AppContext {
     /// `email::send_email`). Startup-time config, not persisted data — that's
     /// why it lives here rather than in `AppState`.
     pub email_config: Option<crate::email::SmtpConfig>,
+    /// Filesystem root every blob path resolves against (see
+    /// `blob_store::blob_path`) — `handlers::upload_file`/
+    /// `resolve_uploaded_content`/`delete_repository` and `vcs_seed::
+    /// seed_demo_history` all take this instead of reading `blob_store::
+    /// BASE_DIR` directly. In production (`main.rs`) this is always
+    /// `blob_store::BASE_DIR` (`"."`, i.e. process CWD — see its doc
+    /// comment). Tests (`tests/mod.rs`) instead give every test its own
+    /// private temp directory here, the same way `db::connect(":memory:")`
+    /// gives every test its own private SQL database — without this, every
+    /// parallel test's `vcs_seed` call would write real blob files into the
+    /// *same* shared `./blobs/...` directory on disk, racing any other
+    /// concurrently-running test that deletes a repository (`DELETE
+    /// /api/repositories/{slug}` removes that slug's whole blob directory —
+    /// see `handlers::delete_repository`), which produced real, observed
+    /// `NotFound` panics under `cargo test`'s default parallel execution
+    /// before this field existed.
+    pub blob_base_dir: std::path::PathBuf,
 }
 
 impl AppContext {
@@ -41,11 +58,13 @@ impl AppContext {
         state: AppState,
         db: SqlitePool,
         email_config: Option<crate::email::SmtpConfig>,
+        blob_base_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             state: RwLock::new(state),
             db,
             email_config,
+            blob_base_dir,
         }
     }
 
@@ -59,28 +78,19 @@ impl AppContext {
 }
 
 pub struct AppState {
-    /// Per-repository file tree, keyed by repository slug. Which slugs exist
-    /// at all now lives in the SQL `repositories` table (see `repo_store.rs`)
-    /// rather than in `AppState` — `tree`/`commits`/`branches`/
-    /// `pending_changes`/`current_branch` below are still per-repo-keyed
-    /// `HashMap`s, but a slug's *existence* is no longer tracked here.
-    /// `repo_store::seeded_slugs` is the SQL-backed replacement for what used
-    /// to be `AppState.seeded_repo_slugs`.
-    pub tree: HashMap<String, Vec<TreeNode>>,
+    /// Which repository slugs exist at all lives in the SQL `repositories`
+    /// table (see `repo_store.rs`). As of Phase 4, the VCS data that used to
+    /// live here as `tree`/`commits`/`branches`/`current_branch`/
+    /// `pending_changes` `HashMap`s is gone too — that's all real SQL tables
+    /// now (`branches`, `commits`, `commit_files`, `tree_entries`,
+    /// `pending_changes`, `current_branch`, `file_locks`), read/written
+    /// directly by `vcs_store.rs`/`lock_store.rs` with no `AppState` lock
+    /// involved at all. `repo_store::seeded_slugs` is the SQL-backed
+    /// replacement for what used to be `AppState.seeded_repo_slugs`.
     pub file_contents: HashMap<String, String>,
     pub image_content: HashMap<String, String>,
     pub image_content_before: HashMap<String, String>,
     pub audio_content: HashMap<String, Vec<u8>>,
-    /// Per-repository commit history (oldest first within each vec), keyed
-    /// by repository slug.
-    pub commits: HashMap<String, Vec<Commit>>,
-    /// Per-repository branch list, keyed by repository slug.
-    pub branches: HashMap<String, Vec<Branch>>,
-    /// Repository slug -> currently checked-out branch name. Absent means
-    /// "main" (the default branch in every seeded repo).
-    pub current_branch: HashMap<String, String>,
-    /// Repository slug -> staged-but-not-committed file changes.
-    pub pending_changes: HashMap<String, Vec<FileChange>>,
     pub pull_requests: Vec<PullRequest>,
     pub access_entries: HashMap<String, Vec<AccessEntry>>,
     pub org_members: Vec<OrgMember>,
@@ -120,303 +130,6 @@ impl AppState {
             },
         );
     }
-
-    /// Recursively sets `lockedBy` on the node at `path` within `slug`'s
-    /// tree. Returns `true` if a matching node was found.
-    pub fn set_lock(&mut self, slug: &str, path: &str, locked_by: Option<String>) -> bool {
-        fn walk(nodes: &mut [TreeNode], path: &str, locked_by: &Option<String>) -> bool {
-            for node in nodes.iter_mut() {
-                if node.path() == path {
-                    match node {
-                        TreeNode::Text { locked_by: lb, .. }
-                        | TreeNode::Image { locked_by: lb, .. }
-                        | TreeNode::Model3d { locked_by: lb, .. }
-                        | TreeNode::Audio { locked_by: lb, .. }
-                        | TreeNode::Binary { locked_by: lb, .. } => {
-                            *lb = locked_by.clone();
-                            return true;
-                        }
-                        TreeNode::Directory { .. } => return false,
-                    }
-                }
-                if let TreeNode::Directory { children, .. } = node
-                    && walk(children, path, locked_by)
-                {
-                    return true;
-                }
-            }
-            false
-        }
-
-        let Some(tree) = self.tree.get_mut(slug) else {
-            return false;
-        };
-        walk(tree, path, &locked_by)
-    }
-}
-
-/// The single demo file tree shared as a starting point by every seeded
-/// repository. Factored out of `seed()` so `db.rs` can rebuild the same
-/// per-slug map as a backward-compat fallback when an old on-disk save has
-/// the pre-refactor bare-`Vec` shape for the `"tree"` blob.
-pub fn demo_tree() -> Vec<TreeNode> {
-    vec![
-        TreeNode::Directory {
-            path: "Assets".into(),
-            name: "Assets".into(),
-            children: vec![
-                TreeNode::Directory {
-                    path: "Assets/Characters".into(),
-                    name: "Characters".into(),
-                    children: vec![
-                        TreeNode::Model3d {
-                            path: "Assets/Characters/hero_rig.fbx".into(),
-                            name: "hero_rig.fbx".into(),
-                            size_label: "42.1 MB".into(),
-                            updated_at: "2h ago".into(),
-                            locked_by: Some("Aiko Tanaka".into()),
-                        },
-                        TreeNode::Image {
-                            path: "Assets/Characters/hero_diffuse.png".into(),
-                            name: "hero_diffuse.png".into(),
-                            size_label: "18.4 MB".into(),
-                            updated_at: "1d ago".into(),
-                            locked_by: None,
-                        },
-                    ],
-                },
-                TreeNode::Directory {
-                    path: "Assets/Environments".into(),
-                    name: "Environments".into(),
-                    children: vec![
-                        TreeNode::Binary {
-                            path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
-                            name: "hollow_keep_terrain.uasset".into(),
-                            size_label: "1.2 GB".into(),
-                            updated_at: "6h ago".into(),
-                            locked_by: None,
-                        },
-                        TreeNode::Image {
-                            path: "Assets/Environments/skybox_dusk.png".into(),
-                            name: "skybox_dusk.png".into(),
-                            size_label: "64.0 MB".into(),
-                            updated_at: "3d ago".into(),
-                            locked_by: None,
-                        },
-                    ],
-                },
-                TreeNode::Directory {
-                    path: "Assets/Audio".into(),
-                    name: "Audio".into(),
-                    children: vec![TreeNode::Audio {
-                        path: "Assets/Audio/theme_main.wav".into(),
-                        name: "theme_main.wav".into(),
-                        size_label: "96.3 MB".into(),
-                        updated_at: "5d ago".into(),
-                        locked_by: Some("Marco Silva".into()),
-                    }],
-                },
-            ],
-        },
-        TreeNode::Directory {
-            path: "Source".into(),
-            name: "Source".into(),
-            children: vec![
-                TreeNode::Text {
-                    path: "Source/Game.cpp".into(),
-                    name: "Game.cpp".into(),
-                    size_label: "12.8 KB".into(),
-                    updated_at: "2h ago".into(),
-                    locked_by: None,
-                },
-                TreeNode::Text {
-                    path: "Source/Game.h".into(),
-                    name: "Game.h".into(),
-                    size_label: "3.1 KB".into(),
-                    updated_at: "2h ago".into(),
-                    locked_by: None,
-                },
-            ],
-        },
-        TreeNode::Text {
-            path: "README.md".into(),
-            name: "README.md".into(),
-            size_label: "2.4 KB".into(),
-            updated_at: "1w ago".into(),
-            locked_by: None,
-        },
-    ]
-}
-
-/// The single demo commit history shared as a starting point by every
-/// seeded repository. See [`demo_tree`] for why this is factored out.
-///
-/// Chronological order (oldest first): main has a linear base, then
-/// feature/dusk-skybox branches off and merges back in, while
-/// feature/hero-rig-retarget branches off and is still open.
-pub fn demo_commits() -> Vec<Commit> {
-    vec![
-        Commit {
-            hash: "0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into(),
-            short_hash: "0f4a7b0".into(),
-            message: "Document sparse checkout workflow".into(),
-            description: None,
-            author: "Aiko Tanaka".into(),
-            author_initials: "AT".into(),
-            timestamp: "1w ago".into(),
-            changed_files: vec![FileChange {
-                path: "README.md".into(),
-                change_type: FileChangeType::Modified,
-                size_delta_label: "+0.6 KB".into(),
-            }],
-            branch: "main".into(),
-            parents: vec![],
-        },
-        Commit {
-            hash: "9b1e4f7a0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f".into(),
-            short_hash: "9b1e4f7".into(),
-            message: "Record updated main theme mix".into(),
-            description: None,
-            author: "Priya Desai".into(),
-            author_initials: "PD".into(),
-            timestamp: "5d ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Audio/theme_main.wav".into(),
-                change_type: FileChangeType::Modified,
-                size_delta_label: "+3.1 MB".into(),
-            }],
-            branch: "main".into(),
-            parents: vec!["0f4a7b0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f8a".into()],
-        },
-        Commit {
-            hash: "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
-            short_hash: "3c6d9e2".into(),
-            message: "Remove deprecated terrain LOD tier".into(),
-            description: None,
-            author: "Marco Silva".into(),
-            author_initials: "MS".into(),
-            timestamp: "2d ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Environments/hollow_keep_terrain.uasset".into(),
-                change_type: FileChangeType::Modified,
-                size_delta_label: "-320.0 MB".into(),
-            }],
-            branch: "main".into(),
-            parents: vec!["9b1e4f7a0c3d6e9f2a5b8c1d4e7f0a3b6c9d2e5f".into()],
-        },
-        Commit {
-            hash: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
-            short_hash: "7d2b9c1".into(),
-            message: "Add dusk skybox for Hollow Keep exteriors".into(),
-            description: None,
-            author: "Marco Silva".into(),
-            author_initials: "MS".into(),
-            timestamp: "1d ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Environments/skybox_dusk.png".into(),
-                change_type: FileChangeType::Added,
-                size_delta_label: "+64.0 MB".into(),
-            }],
-            branch: "feature/dusk-skybox".into(),
-            parents: vec!["3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into()],
-        },
-        Commit {
-            hash: "f2a9c81b5e3d6a9c2f5b8e1d4a7c0f3b6e9a2d5f".into(),
-            short_hash: "f2a9c81".into(),
-            message: "Merge branch 'feature/dusk-skybox' into main".into(),
-            description: None,
-            author: "Marco Silva".into(),
-            author_initials: "MS".into(),
-            timestamp: "20h ago".into(),
-            changed_files: vec![],
-            branch: "main".into(),
-            parents: vec![
-                "3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into(),
-                "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
-            ],
-        },
-        Commit {
-            hash: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
-            short_hash: "e5f8a1b".into(),
-            message: "Fix world tick order for late-joining actors".into(),
-            description: Some(
-                "Renderer.Submit was picking up stale draw calls when actors joined mid-tick."
-                    .into(),
-            ),
-            author: "Priya Desai".into(),
-            author_initials: "PD".into(),
-            timestamp: "6h ago".into(),
-            changed_files: vec![
-                FileChange {
-                    path: "Source/Game.cpp".into(),
-                    change_type: FileChangeType::Modified,
-                    size_delta_label: "+0.4 KB".into(),
-                },
-                FileChange {
-                    path: "Source/Game.h".into(),
-                    change_type: FileChangeType::Modified,
-                    size_delta_label: "±0 B".into(),
-                },
-            ],
-            branch: "main".into(),
-            parents: vec!["f2a9c81b5e3d6a9c2f5b8e1d4a7c0f3b6e9a2d5f".into()],
-        },
-        Commit {
-            hash: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
-            short_hash: "a1c4e7f".into(),
-            message: "Retarget hero rig to updated skeleton".into(),
-            description: None,
-            author: "Aiko Tanaka".into(),
-            author_initials: "AT".into(),
-            timestamp: "2h ago".into(),
-            changed_files: vec![FileChange {
-                path: "Assets/Characters/hero_rig.fbx".into(),
-                change_type: FileChangeType::Modified,
-                size_delta_label: "+1.2 MB".into(),
-            }],
-            branch: "feature/hero-rig-retarget".into(),
-            parents: vec!["3c6d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a4b7c0d".into()],
-        },
-    ]
-}
-
-/// The single demo branch list shared as a starting point by every seeded
-/// repository. See [`demo_tree`] for why this is factored out.
-pub fn demo_branches() -> Vec<Branch> {
-    vec![
-        Branch {
-            name: "main".into(),
-            head: "e5f8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2".into(),
-            is_default: true,
-        },
-        Branch {
-            name: "feature/dusk-skybox".into(),
-            head: "7d2b9c1e4f68a0b3d5c7e9f1a2b4c6d8e0f1a2b3".into(),
-            is_default: false,
-        },
-        Branch {
-            name: "feature/hero-rig-retarget".into(),
-            head: "a1c4e7f92b3d5e6081247fa9c0d8b3e6f2a1c47".into(),
-            is_default: false,
-        },
-    ]
-}
-
-/// Builds the per-slug tree map used both at first-run seed time and as the
-/// `db.rs` fallback when an old on-disk save can't be deserialized into the
-/// new map shape.
-pub fn seeded_tree(slugs: &HashSet<String>) -> HashMap<String, Vec<TreeNode>> {
-    slugs.iter().map(|s| (s.clone(), demo_tree())).collect()
-}
-
-/// See [`seeded_tree`].
-pub fn seeded_commits(slugs: &HashSet<String>) -> HashMap<String, Vec<Commit>> {
-    slugs.iter().map(|s| (s.clone(), demo_commits())).collect()
-}
-
-/// See [`seeded_tree`].
-pub fn seeded_branches(slugs: &HashSet<String>) -> HashMap<String, Vec<Branch>> {
-    slugs.iter().map(|s| (s.clone(), demo_branches())).collect()
 }
 
 /// The 6 demo repositories every fresh install (or first-ever migration of
@@ -424,9 +137,12 @@ pub fn seeded_branches(slugs: &HashSet<String>) -> HashMap<String, Vec<Branch>> 
 /// migrate_or_seed_repositories` can insert the exact same dataset into the
 /// SQL `repositories` table (see `repo_store.rs`) instead of `seed()`
 /// building an in-memory `Vec` — `AppState` no longer carries a
-/// `repositories` field at all (see its doc comment). `seed()` itself still
-/// calls this, purely to get the slug list needed to build the `tree`/
-/// `commits`/`branches` per-slug demo maps below.
+/// `repositories` field at all (see its doc comment). Each seeded slug's
+/// real VCS history (tree/commits/branches) is synthesized separately by
+/// `vcs_seed::seed_demo_history`, not built here — `seed()` (below) no
+/// longer needs this function's return value for anything beyond the
+/// `AppState` fields that remain (there's no more per-slug `tree`/`commits`/
+/// `branches` map to build from the slug list).
 pub fn demo_repositories() -> Vec<Repository> {
     vec![
         Repository {
@@ -496,13 +212,6 @@ pub fn demo_repositories() -> Vec<Repository> {
 }
 
 pub fn seed() -> AppState {
-    let seeded_repo_slugs: HashSet<String> =
-        demo_repositories().iter().map(|r| r.slug.clone()).collect();
-
-    let tree = seeded_tree(&seeded_repo_slugs);
-    let commits = seeded_commits(&seeded_repo_slugs);
-    let branches = seeded_branches(&seeded_repo_slugs);
-
     let pull_requests = vec![
         PullRequest {
             id: "42".into(),
@@ -796,15 +505,10 @@ pub fn seed() -> AppState {
         .collect();
 
     AppState {
-        tree,
         file_contents,
         image_content,
         image_content_before,
         audio_content,
-        commits,
-        branches,
-        current_branch: HashMap::new(),
-        pending_changes: HashMap::new(),
         pull_requests,
         access_entries,
         org_members,

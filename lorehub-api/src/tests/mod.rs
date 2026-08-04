@@ -75,6 +75,23 @@ pub async fn test_app() -> Router {
     test_app_with_config(RouterConfig::from_env()).await
 }
 
+/// Gives every test its own private filesystem root for blob storage (see
+/// `AppContext::blob_base_dir`'s doc comment for why this exists) — the
+/// filesystem equivalent of `db::connect(":memory:")`'s private SQL
+/// database. Deliberately leaks the temp directory (`.keep()`, not letting
+/// `TempDir`'s `Drop` clean it up) rather than trying to keep it alive for
+/// exactly as long as the `Router`/`SharedState` built from it: threading a
+/// `TempDir` handle through `AppContext` would mean a non-test build also
+/// needs to know about `tempfile` (a dev-dependency only — see `Cargo.toml`)
+/// to hold that field, just for a variant that's always `None` outside
+/// tests. A handful of leaked OS-temp-dir directories per `cargo test` run
+/// is a negligible, self-cleaning-on-CI cost next to that complexity.
+fn isolated_blob_dir() -> std::path::PathBuf {
+    tempfile::tempdir()
+        .expect("create isolated per-test blob directory")
+        .keep()
+}
+
 /// Like [`test_app`], but with an explicit [`RouterConfig`] instead of the
 /// env-derived default — used by tests that need a tiny body-size limit or
 /// a tiny login rate-limit burst so the test runs fast, without mutating
@@ -89,14 +106,21 @@ pub async fn test_app_with_config(config: RouterConfig) -> Router {
     // `:memory:` pool and has no legacy `kv_store` blob to import either, so
     // this seeds the same 6 demo repositories `state::seed()` used to build
     // in-memory — repository handlers now read/write that table directly,
-    // not `AppState`.
+    // not `AppState`. `vcs_seed::seed_demo_history` then backfills real
+    // commit/branch/tree history for those repos the same way a fresh
+    // `cargo run` would (see `main.rs`) — without this, every seeded repo's
+    // `main` branch would have no commits at all, which several VCS tests
+    // rely on not being the case (e.g. committing on top of an existing
+    // history, checking out a branch with real diverging content).
     db::migrate_or_seed_repositories(&pool).await;
+    let blob_base_dir = isolated_blob_dir();
+    crate::vcs_seed::seed_demo_history(&pool, &blob_base_dir).await;
     let seeded = state::seed();
     // Tests never send real email — `email_config: None` drives every
     // send through `email::send_email`'s log-only fallback path, which is
     // fine since these tests assert against HTTP-visible side effects
     // (token now exists / member now exists) rather than email content.
-    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
+    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None, blob_base_dir));
     build_router(shared_state, config)
 }
 
@@ -110,10 +134,12 @@ pub async fn test_app_with_config(config: RouterConfig) -> Router {
 /// test that doesn't need it.
 pub async fn test_app_with_state() -> (Router, SharedState) {
     let pool = db::connect(":memory:").await;
-    // See `test_app_with_config` for why this call is needed.
+    // See `test_app_with_config` for why these calls are needed.
     db::migrate_or_seed_repositories(&pool).await;
+    let blob_base_dir = isolated_blob_dir();
+    crate::vcs_seed::seed_demo_history(&pool, &blob_base_dir).await;
     let seeded = state::seed();
-    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
+    let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None, blob_base_dir));
     let router = build_router(shared_state.clone(), RouterConfig::from_env());
     (router, shared_state)
 }

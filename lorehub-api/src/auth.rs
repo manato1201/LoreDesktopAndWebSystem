@@ -38,14 +38,6 @@ pub fn generate_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Generates a 40-char lowercase-hex fake commit SHA (20 random bytes,
-/// hex-encoded) for the simulated commit endpoint — there is no real
-/// content-hashing VCS backing this demo server.
-pub fn generate_commit_hash() -> String {
-    let bytes: [u8; 20] = rand::thread_rng().r#gen();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Generalized cookie-value extractor — pulls the value of the cookie named
 /// `name` out of the request's `Cookie` header, or `None` if it isn't
 /// present. Backs both `extract_session_token` (access token) and

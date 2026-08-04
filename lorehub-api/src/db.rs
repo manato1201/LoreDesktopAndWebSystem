@@ -117,42 +117,23 @@ async fn load_blob_lenient<T: DeserializeOwned>(pool: &SqlitePool, key: &str) ->
 /// `kv_store` blob save exists is still the right signal for whether to
 /// reload the rest of `AppState` versus building it fresh via
 /// `state::seed()`.
+///
+/// `tree`/`commits`/`branches`/`current_branch`/`pending_changes` are no
+/// longer part of this blob at all as of Phase 4 — that data now lives in
+/// the real SQL tables `vcs_store.rs`/`lock_store.rs` read/write directly
+/// (`branches`, `commits`, `commit_files`, `tree_entries`, `pending_changes`,
+/// `current_branch`), populated by `migrate_or_seed_repositories` +
+/// `vcs_seed::seed_demo_history` rather than reloaded here.
 pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
     let org_members: Vec<crate::models::OrgMember> = load_blob(pool, "org_members").await?;
 
-    // The SQL `repositories` table's `is_seeded` column (see `repo_store.rs`)
-    // is the replacement for the old in-memory `AppState.seeded_repo_slugs` —
-    // used only as input to the tree/commits/branches lenient fallback below.
-    let seeded_repo_slugs = crate::repo_store::seeded_slugs(pool).await;
-
-    // Older saves predate the tree/commits/branches per-repo-slug map
-    // refactor and still have the bare-`Vec` shape on disk for these three
-    // keys; `load_blob_lenient` swallows that deserialize failure and we
-    // fall back to a fresh per-slug clone of the demo dataset so existing
-    // seeded repos keep showing the same Code/Commits/Branches content they
-    // did before the refactor.
-    let tree = load_blob_lenient(pool, "tree")
-        .await
-        .unwrap_or_else(|| crate::state::seeded_tree(&seeded_repo_slugs));
-    let commits = load_blob_lenient(pool, "commits")
-        .await
-        .unwrap_or_else(|| crate::state::seeded_commits(&seeded_repo_slugs));
-    let branches = load_blob_lenient(pool, "branches")
-        .await
-        .unwrap_or_else(|| crate::state::seeded_branches(&seeded_repo_slugs));
-
     Some(AppState {
-        tree,
         file_contents: load_blob(pool, "file_contents").await.unwrap_or_default(),
         image_content: load_blob(pool, "image_content").await.unwrap_or_default(),
         image_content_before: load_blob(pool, "image_content_before")
             .await
             .unwrap_or_default(),
         audio_content: load_blob(pool, "audio_content").await.unwrap_or_default(),
-        commits,
-        branches,
-        current_branch: load_blob(pool, "current_branch").await.unwrap_or_default(),
-        pending_changes: load_blob(pool, "pending_changes").await.unwrap_or_default(),
         pull_requests: load_blob(pool, "pull_requests").await.unwrap_or_default(),
         access_entries: load_blob(pool, "access_entries").await.unwrap_or_default(),
         org_members,
@@ -192,16 +173,15 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     // deliberately NOT saved here anymore — that data lives in the real SQL
     // `repositories` table (see `repo_store.rs`), written directly by
     // `repo_store::create`/`update`/`delete` as each mutation happens, not
-    // batched through this whole-`AppState` blob dump.
-    save_blob(pool, "tree", &state.tree).await;
+    // batched through this whole-`AppState` blob dump. As of Phase 4,
+    // `tree`/`commits`/`branches`/`current_branch`/`pending_changes` are the
+    // same story — real SQL tables written directly by `vcs_store.rs`/
+    // `lock_store.rs`, no longer part of `AppState` at all (see its doc
+    // comment in `state.rs`).
     save_blob(pool, "file_contents", &state.file_contents).await;
     save_blob(pool, "image_content", &state.image_content).await;
     save_blob(pool, "image_content_before", &state.image_content_before).await;
     save_blob(pool, "audio_content", &state.audio_content).await;
-    save_blob(pool, "commits", &state.commits).await;
-    save_blob(pool, "branches", &state.branches).await;
-    save_blob(pool, "current_branch", &state.current_branch).await;
-    save_blob(pool, "pending_changes", &state.pending_changes).await;
     save_blob(pool, "pull_requests", &state.pull_requests).await;
     save_blob(pool, "access_entries", &state.access_entries).await;
     save_blob(pool, "org_members", &state.org_members).await;
@@ -237,6 +217,15 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
 ///   (`state::demo_repositories()`), also marked `is_seeded = true` — same
 ///   semantics as the old `AppState.seeded_repo_slugs` every one of those six
 ///   slugs used to be a member of.
+///
+/// Also inserts each new repository's initial `main` branch row (see
+/// `vcs_store::init_main_branch`) — every repository needs at least this row
+/// for `GET /tree`/checkout/commit to have a current branch to resolve
+/// against. This runs for *every* repo created here (legacy-imported or
+/// freshly seeded alike); the actual demo commit history on top of it is a
+/// separate, later step (`vcs_seed::seed_demo_history`, called right after
+/// this function in `main`) — this function only ever establishes identity
+/// + an empty `main` branch, never any commits.
 pub async fn migrate_or_seed_repositories(pool: &SqlitePool) {
     if !crate::repo_store::list(pool).await.is_empty() {
         return;
@@ -251,6 +240,7 @@ pub async fn migrate_or_seed_repositories(pool: &SqlitePool) {
         };
 
     for repo in source {
+        let slug = repo.slug.clone();
         crate::repo_store::create(
             pool,
             crate::repo_store::NewRepository {
@@ -267,5 +257,6 @@ pub async fn migrate_or_seed_repositories(pool: &SqlitePool) {
             },
         )
         .await;
+        crate::vcs_store::init_main_branch(pool, &slug).await;
     }
 }
