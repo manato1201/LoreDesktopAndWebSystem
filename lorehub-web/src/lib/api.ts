@@ -28,13 +28,29 @@ import type {
  * needing a second image build; it's `undefined` in local (non-Docker) dev,
  * where both "the browser" and "this process" mean the same host and
  * `NEXT_PUBLIC_API_URL` is already correct for both.
+ *
+ * `NEXT_PUBLIC_USE_API_PROXY` opts the BROWSER side into relative `/api/...`
+ * paths instead — needed whenever lorehub-web and lorehub-api sit on
+ * genuinely different domains (see next.config.ts's `rewrites()`, which
+ * proxies those relative calls server-side to `API_INTERNAL_URL`): without
+ * this, the session cookie lorehub-api sets is scoped to the API's own
+ * domain and is never sent back on requests the browser makes to
+ * lorehub-web's domain, breaking login. This is a dedicated `"true"`/unset
+ * flag rather than keying off `NEXT_PUBLIC_API_URL` being empty, since not
+ * every hosting dashboard lets an operator save an env var as a genuinely
+ * empty string (a blank field is easy to leave accidentally still holding
+ * its old value) — an explicit flag can't be silently ignored that way.
  */
+const USE_API_PROXY = process.env.NEXT_PUBLIC_USE_API_PROXY === "true";
+
 const API_BASE =
   typeof window === "undefined"
     ? (process.env.API_INTERNAL_URL ??
       process.env.NEXT_PUBLIC_API_URL ??
       "http://localhost:4000")
-    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
+    : USE_API_PROXY
+      ? ""
+      : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
 
 /**
  * Client-side 401 recovery. When a browser-driven request comes back 401
