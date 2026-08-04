@@ -1024,3 +1024,48 @@ pub async fn commit_count(pool: &SqlitePool, repo_slug: &str) -> i64 {
         .expect("count commits")
         .get("count")
 }
+
+// ---------------------------------------------------------------------
+// Diff support (Phase 5) — resolving a path's content across two commits.
+// ---------------------------------------------------------------------
+
+/// `true` iff `hash` names a real commit recorded for `repo_slug`. Used by
+/// `handlers::get_diff` to tell an actually-unknown/invalid commit hash
+/// (404) apart from a valid commit that simply has no `tree_entries` row for
+/// one particular path — the latter is a normal "the path didn't exist at
+/// that point in history" state (handled by the added/deleted logic in
+/// `get_diff`), not an error, and must not also 404.
+pub async fn commit_exists(pool: &SqlitePool, repo_slug: &str, hash: &str) -> bool {
+    sqlx::query("SELECT 1 FROM commits WHERE repo_slug = ?1 AND hash = ?2")
+        .bind(repo_slug)
+        .bind(hash)
+        .fetch_optional(pool)
+        .await
+        .expect("query commit existence")
+        .is_some()
+}
+
+/// Resolves `path`'s `content_hash` in `commit_hash`'s tree snapshot
+/// (`tree_entries`), or `None` if that path didn't exist in the tree at that
+/// commit. Callers that need to distinguish "path absent" from "commit
+/// itself doesn't exist" should check [`commit_exists`] separately — this
+/// function alone can't tell the two apart (an unknown commit hash and a
+/// valid-but-pathless one both look like zero matching rows here).
+pub async fn resolve_content_hash_at_commit(
+    pool: &SqlitePool,
+    repo_slug: &str,
+    commit_hash: &str,
+    path: &str,
+) -> Option<String> {
+    sqlx::query(
+        "SELECT content_hash FROM tree_entries
+         WHERE repo_slug = ?1 AND commit_hash = ?2 AND path = ?3",
+    )
+    .bind(repo_slug)
+    .bind(commit_hash)
+    .bind(path)
+    .fetch_optional(pool)
+    .await
+    .expect("query tree_entries for path at commit")
+    .map(|row| row.get("content_hash"))
+}
