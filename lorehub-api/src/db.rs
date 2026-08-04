@@ -105,13 +105,25 @@ async fn load_blob_lenient<T: DeserializeOwned>(pool: &SqlitePool, key: &str) ->
 
 /// `None` means this is a first run (no prior save) — the caller should
 /// seed fresh demo data and call [`save_all`].
+///
+/// `org_members` is used as the "has this instance ever been saved before"
+/// sentinel (via the early-return `?`) — it's been present in every save
+/// since long before this VCS redesign, so its absence reliably means a
+/// fresh `lorehub.db`. This used to be `repositories`, but that field moved
+/// out of the `kv_store` blob scheme entirely once `repositories` became a
+/// real SQL table (see `repo_store.rs`) — by the time this function runs,
+/// `main()` has already called [`migrate_or_seed_repositories`], so the SQL
+/// table itself is never empty here, but whether *this* particular
+/// `kv_store` blob save exists is still the right signal for whether to
+/// reload the rest of `AppState` versus building it fresh via
+/// `state::seed()`.
 pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
-    let repositories: Vec<crate::models::Repository> = load_blob(pool, "repositories").await?;
-    // Older saves predate `seeded_repo_slugs` — treat every already-persisted
-    // repository as seeded so existing repos keep showing the demo tree.
-    let seeded_repo_slugs: std::collections::HashSet<String> = load_blob(pool, "seeded_repo_slugs")
-        .await
-        .unwrap_or_else(|| repositories.iter().map(|r| r.slug.clone()).collect());
+    let org_members: Vec<crate::models::OrgMember> = load_blob(pool, "org_members").await?;
+
+    // The SQL `repositories` table's `is_seeded` column (see `repo_store.rs`)
+    // is the replacement for the old in-memory `AppState.seeded_repo_slugs` —
+    // used only as input to the tree/commits/branches lenient fallback below.
+    let seeded_repo_slugs = crate::repo_store::seeded_slugs(pool).await;
 
     // Older saves predate the tree/commits/branches per-repo-slug map
     // refactor and still have the bare-`Vec` shape on disk for these three
@@ -130,8 +142,6 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
         .unwrap_or_else(|| crate::state::seeded_branches(&seeded_repo_slugs));
 
     Some(AppState {
-        repositories,
-        seeded_repo_slugs,
         tree,
         file_contents: load_blob(pool, "file_contents").await.unwrap_or_default(),
         image_content: load_blob(pool, "image_content").await.unwrap_or_default(),
@@ -148,7 +158,7 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
         pending_changes: load_blob(pool, "pending_changes").await.unwrap_or_default(),
         pull_requests: load_blob(pool, "pull_requests").await.unwrap_or_default(),
         access_entries: load_blob(pool, "access_entries").await.unwrap_or_default(),
-        org_members: load_blob(pool, "org_members").await.unwrap_or_default(),
+        org_members,
         storage: load_blob(pool, "storage")
             .await
             .unwrap_or(crate::models::StorageUsage {
@@ -181,8 +191,11 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
 }
 
 pub async fn save_all(pool: &SqlitePool, state: &AppState) {
-    save_blob(pool, "repositories", &state.repositories).await;
-    save_blob(pool, "seeded_repo_slugs", &state.seeded_repo_slugs).await;
+    // `repositories` (and, historically, `seeded_repo_slugs`) are
+    // deliberately NOT saved here anymore — that data lives in the real SQL
+    // `repositories` table (see `repo_store.rs`), written directly by
+    // `repo_store::create`/`update`/`delete` as each mutation happens, not
+    // batched through this whole-`AppState` blob dump.
     save_blob(pool, "tree", &state.tree).await;
     save_blob(pool, "file_contents", &state.file_contents).await;
     save_blob(pool, "image_content", &state.image_content).await;
@@ -205,4 +218,60 @@ pub async fn save_all(pool: &SqlitePool, state: &AppState) {
     save_blob(pool, "refresh_tokens", &state.refresh_tokens).await;
     save_blob(pool, "invites", &state.invites).await;
     save_blob(pool, "password_resets", &state.password_resets).await;
+}
+
+/// Gets the SQL `repositories` table (see `repo_store.rs`) into a valid
+/// starting state on startup, exactly once. Must be called after migrations
+/// have run and before [`load_state`]/`state::seed()` (see `main`) — `main`
+/// calls this unconditionally on every startup; it's a no-op whenever the
+/// table already has rows (an already-migrated or already-running real
+/// instance), so it never overwrites existing data.
+///
+/// Two first-time cases:
+/// - **Pre-Phase-2 `lorehub.db`**: the old `kv_store` still has a
+///   `"repositories"` blob (the pre-this-redesign bare-`Vec<Repository>`
+///   shape). Its identity fields (slug/name/organization/description/
+///   visibility) are imported as-is; every imported repo is marked
+///   `is_seeded = true`; `size_label`/`locked_file_count`/`updated_at`
+///   likewise carry over from the old blob (they're just display strings/
+///   counters, not something this phase recomputes). This is a one-time
+///   identity migration — none of the pre-Phase-2 `tree`/`commits`/`branches`
+///   blobs are touched here at all (those still load through the existing
+///   `kv_store` path in [`load_state`]).
+/// - **Genuinely fresh install**: no `repositories` blob either. Seeds the
+///   same 6 demo repositories `state::seed()` has always built in memory
+///   (`state::demo_repositories()`), also marked `is_seeded = true` — same
+///   semantics as the old `AppState.seeded_repo_slugs` every one of those six
+///   slugs used to be a member of.
+pub async fn migrate_or_seed_repositories(pool: &SqlitePool) {
+    if !crate::repo_store::list(pool).await.is_empty() {
+        return;
+    }
+
+    let created_at = crate::auth::current_unix_time();
+
+    let source: Vec<crate::models::Repository> =
+        match load_blob::<Vec<crate::models::Repository>>(pool, "repositories").await {
+            Some(legacy) => legacy,
+            None => crate::state::demo_repositories(),
+        };
+
+    for repo in source {
+        crate::repo_store::create(
+            pool,
+            crate::repo_store::NewRepository {
+                slug: repo.slug,
+                name: repo.name,
+                organization: repo.organization,
+                description: repo.description,
+                visibility: repo.visibility,
+                is_seeded: true,
+                size_label: repo.size_label,
+                locked_file_count: repo.locked_file_count,
+                updated_at: repo.updated_at,
+                created_at,
+            },
+        )
+        .await;
+    }
 }

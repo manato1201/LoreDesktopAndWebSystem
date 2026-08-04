@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::auth;
 use crate::models::*;
+use crate::repo_store;
 use crate::state::{SessionEntry, SharedState};
 
 fn not_found(message: &str) -> Response {
@@ -339,14 +340,12 @@ pub async fn me(axum::Extension(user): axum::Extension<OrgMember>) -> Json<OrgMe
 }
 
 pub async fn list_repositories(State(ctx): State<SharedState>) -> Json<Vec<Repository>> {
-    let state = ctx.read().await;
-    Json(state.repositories.clone())
+    Json(repo_store::list(&ctx.db).await)
 }
 
 pub async fn get_repository(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = ctx.read().await;
-    match state.repositories.iter().find(|r| r.slug == slug) {
-        Some(repo) => Json(repo.clone()).into_response(),
+    match repo_store::get(&ctx.db, &slug).await {
+        Some(repo) => Json(repo).into_response(),
         None => not_found("repository not found"),
     }
 }
@@ -377,14 +376,14 @@ fn slugify(name: &str) -> String {
 
 /// Appends `-2`, `-3`, ... to `base` until it no longer collides with an
 /// existing repository slug.
-fn unique_slug(base: &str, existing: &[Repository]) -> String {
-    if !existing.iter().any(|r| r.slug == base) {
+async fn unique_slug(pool: &sqlx::SqlitePool, base: &str) -> String {
+    if !repo_store::exists(pool, base).await {
         return base.to_string();
     }
     let mut suffix = 2;
     loop {
         let candidate = format!("{base}-{suffix}");
-        if !existing.iter().any(|r| r.slug == candidate) {
+        if !repo_store::exists(pool, &candidate).await {
             return candidate;
         }
         suffix += 1;
@@ -408,27 +407,28 @@ pub async fn create_repository(
         return bad_request("name is required");
     }
 
+    let slug = unique_slug(&ctx.db, &slugify(&name)).await;
+    let repository = repo_store::create(
+        &ctx.db,
+        repo_store::NewRepository {
+            slug: slug.clone(),
+            name,
+            organization: "Nebula Studios".to_string(),
+            description: body.description.trim().to_string(),
+            visibility: body.visibility,
+            is_seeded: false,
+            size_label: "0 B".to_string(),
+            locked_file_count: 0,
+            updated_at: "just now".to_string(),
+            created_at: auth::current_unix_time(),
+        },
+    )
+    .await;
+
     let mut state = ctx.write().await;
-    let slug = unique_slug(&slugify(&name), &state.repositories);
-
-    let repository = Repository {
-        slug: slug.clone(),
-        name,
-        organization: "Nebula Studios".to_string(),
-        description: body.description.trim().to_string(),
-        updated_at: "just now".to_string(),
-        size_label: "0 B".to_string(),
-        locked_file_count: 0,
-        visibility: body.visibility,
-    };
-    state.repositories.push(repository.clone());
-
     state.record_audit(&user.name, "created repository", &slug);
-
-    let repositories = state.repositories.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     (StatusCode::CREATED, Json(repository)).into_response()
@@ -447,33 +447,29 @@ pub async fn update_repository(
     Path(slug): Path<String>,
     Json(body): Json<UpdateRepositoryRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    let Some(repo) = state.repositories.iter_mut().find(|r| r.slug == slug) else {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
+    }
+
+    if let Some(name) = &body.name
+        && name.trim().is_empty()
+    {
+        return bad_request("name cannot be empty");
+    }
+
+    let patch = repo_store::RepositoryUpdate {
+        name: body.name.map(|n| n.trim().to_string()),
+        description: body.description.map(|d| d.trim().to_string()),
+        visibility: body.visibility,
     };
+    let repo = repo_store::update(&ctx.db, &slug, patch, "just now")
+        .await
+        .expect("repository existed a moment ago (existence just checked above)");
 
-    if let Some(name) = body.name {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return bad_request("name cannot be empty");
-        }
-        repo.name = name;
-    }
-    if let Some(description) = body.description {
-        repo.description = description.trim().to_string();
-    }
-    if let Some(visibility) = body.visibility {
-        repo.visibility = visibility;
-    }
-    repo.updated_at = "just now".to_string();
-    let repo = repo.clone();
-
+    let mut state = ctx.write().await;
     state.record_audit(&user.name, "updated settings for", &slug);
-
-    let repositories = state.repositories.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     Json(repo).into_response()
@@ -488,24 +484,23 @@ pub async fn delete_repository(
         return deny_role_action(&ctx, &user, "delete repository", &slug).await;
     }
 
-    let mut state = ctx.write().await;
-    let before = state.repositories.len();
-    state.repositories.retain(|r| r.slug != slug);
-    if state.repositories.len() == before {
+    // Deletes the `repositories` row itself; every VCS table's `repo_slug`
+    // foreign key is `ON DELETE CASCADE` (see migrations/0001_vcs_schema.sql
+    // and repo_store::delete's doc comment), so this alone also atomically
+    // removes any tree/commit/branch/etc. rows for `slug` — nothing left to
+    // separately clean up on the SQL side.
+    if !repo_store::delete(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    state.seeded_repo_slugs.remove(&slug);
+
+    let mut state = ctx.write().await;
     state.pull_requests.retain(|pr| pr.repo_slug != slug);
 
     state.record_audit(&user.name, "deleted repository", &slug);
 
-    let repositories = state.repositories.clone();
-    let seeded_repo_slugs = state.seeded_repo_slugs.clone();
     let pull_requests = state.pull_requests.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "repositories", &repositories).await;
-    crate::db::save_blob(&ctx.db, "seeded_repo_slugs", &seeded_repo_slugs).await;
     crate::db::save_blob(&ctx.db, "pull_requests", &pull_requests).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
@@ -518,10 +513,10 @@ pub async fn get_file_content(
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
@@ -716,10 +711,10 @@ pub async fn get_image(
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
@@ -744,10 +739,10 @@ pub async fn get_image_before(
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
@@ -783,10 +778,10 @@ pub async fn upload_file(
 ) -> Response {
     use base64::Engine;
 
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
 
     let path = body.path.trim().to_string();
     if path.is_empty() {
@@ -851,10 +846,10 @@ pub async fn get_audio(
     Path((slug, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Read) {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
@@ -873,10 +868,10 @@ pub async fn get_audio(
 }
 
 pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     Json(state.tree.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
@@ -893,10 +888,10 @@ pub async fn toggle_lock(
     Path(slug): Path<String>,
     Json(body): Json<LockRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &body.path, PermissionLevel::Lock)
     {
         drop(state);
@@ -927,18 +922,18 @@ pub async fn toggle_lock(
 }
 
 pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     Json(state.commits.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
 pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     Json(state.branches.get(&slug).cloned().unwrap_or_default()).into_response()
 }
 
@@ -946,10 +941,10 @@ pub async fn get_commit(
     State(ctx): State<SharedState>,
     Path((slug, hash)): Path<(String, String)>,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     match state
         .commits
         .get(&slug)
@@ -964,10 +959,10 @@ pub async fn get_current_branch(
     State(ctx): State<SharedState>,
     Path(slug): Path<String>,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     let branch = state
         .current_branch
         .get(&slug)
@@ -987,10 +982,10 @@ pub async fn checkout_branch(
     Path(slug): Path<String>,
     Json(body): Json<CheckoutRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
 
     let exists = state
         .branches
@@ -1033,10 +1028,10 @@ pub async fn create_branch(
     Path(slug): Path<String>,
     Json(body): Json<CreateBranchRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
 
     let name = body.name.trim().to_string();
     if name.is_empty() {
@@ -1093,10 +1088,10 @@ pub async fn get_pending_changes(
     State(ctx): State<SharedState>,
     Path(slug): Path<String>,
 ) -> Response {
-    let state = ctx.read().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let state = ctx.read().await;
     Json(
         state
             .pending_changes
@@ -1123,10 +1118,10 @@ pub async fn stage_change(
     Path(slug): Path<String>,
     Json(body): Json<StageRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
     if !crate::authz::check_path_permission(
         &state,
         &user,
@@ -1177,10 +1172,10 @@ pub async fn create_commit(
     Path(slug): Path<String>,
     Json(body): Json<CreateCommitRequest>,
 ) -> Response {
-    let mut state = ctx.write().await;
-    if !state.repositories.iter().any(|r| r.slug == slug) {
+    if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
+    let mut state = ctx.write().await;
 
     let message = body.message.trim().to_string();
     if message.is_empty() {

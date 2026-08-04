@@ -45,6 +45,7 @@ mod invites;
 mod metrics;
 mod password_reset;
 mod rate_limit;
+mod repo_store;
 mod repositories;
 mod schema;
 mod upload_and_range;
@@ -82,6 +83,13 @@ pub async fn test_app() -> Router {
 /// matters here).
 pub async fn test_app_with_config(config: RouterConfig) -> Router {
     let pool = db::connect(":memory:").await;
+    // Mirrors what `main()` does on a real fresh install: the SQL
+    // `repositories` table (see `repo_store.rs`) is empty on this brand-new
+    // `:memory:` pool and has no legacy `kv_store` blob to import either, so
+    // this seeds the same 6 demo repositories `state::seed()` used to build
+    // in-memory — repository handlers now read/write that table directly,
+    // not `AppState`.
+    db::migrate_or_seed_repositories(&pool).await;
     let seeded = state::seed();
     // Tests never send real email — `email_config: None` drives every
     // send through `email::send_email`'s log-only fallback path, which is
@@ -101,6 +109,8 @@ pub async fn test_app_with_config(config: RouterConfig) -> Router {
 /// test that doesn't need it.
 pub async fn test_app_with_state() -> (Router, SharedState) {
     let pool = db::connect(":memory:").await;
+    // See `test_app_with_config` for why this call is needed.
+    db::migrate_or_seed_repositories(&pool).await;
     let seeded = state::seed();
     let shared_state: SharedState = Arc::new(AppContext::new(seeded, pool, None));
     let router = build_router(shared_state.clone(), RouterConfig::from_env());

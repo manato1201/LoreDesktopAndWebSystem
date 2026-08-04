@@ -59,16 +59,13 @@ impl AppContext {
 }
 
 pub struct AppState {
-    pub repositories: Vec<Repository>,
-    /// Slugs of repositories that have seeded tree/commit/branch demo data.
-    /// `tree`/`commits`/`branches` below are keyed by repository slug; every
-    /// slug in this set gets its own clone of the shared demo dataset at
-    /// seed time. Repos created later via `POST /api/repositories` are
-    /// intentionally left out of this set (and out of the three maps) so
-    /// their Code/Commits tabs report an empty (but valid, non-404)
-    /// tree/history instead of inheriting the demo data.
-    pub seeded_repo_slugs: HashSet<String>,
-    /// Per-repository file tree, keyed by repository slug.
+    /// Per-repository file tree, keyed by repository slug. Which slugs exist
+    /// at all now lives in the SQL `repositories` table (see `repo_store.rs`)
+    /// rather than in `AppState` — `tree`/`commits`/`branches`/
+    /// `pending_changes`/`current_branch` below are still per-repo-keyed
+    /// `HashMap`s, but a slug's *existence* is no longer tracked here.
+    /// `repo_store::seeded_slugs` is the SQL-backed replacement for what used
+    /// to be `AppState.seeded_repo_slugs`.
     pub tree: HashMap<String, Vec<TreeNode>>,
     pub file_contents: HashMap<String, String>,
     pub image_content: HashMap<String, String>,
@@ -437,8 +434,16 @@ pub fn seeded_branches(slugs: &HashSet<String>) -> HashMap<String, Vec<Branch>> 
     slugs.iter().map(|s| (s.clone(), demo_branches())).collect()
 }
 
-pub fn seed() -> AppState {
-    let repositories = vec![
+/// The 6 demo repositories every fresh install (or first-ever migration of
+/// this VCS redesign) seeds. Factored out of `seed()` so `db::
+/// migrate_or_seed_repositories` can insert the exact same dataset into the
+/// SQL `repositories` table (see `repo_store.rs`) instead of `seed()`
+/// building an in-memory `Vec` — `AppState` no longer carries a
+/// `repositories` field at all (see its doc comment). `seed()` itself still
+/// calls this, purely to get the slug list needed to build the `tree`/
+/// `commits`/`branches` per-slug demo maps below.
+pub fn demo_repositories() -> Vec<Repository> {
+    vec![
         Repository {
             slug: "starforge-vfx".into(),
             name: "starforge-vfx".into(),
@@ -502,9 +507,12 @@ pub fn seed() -> AppState {
             locked_file_count: 0,
             visibility: Visibility::Public,
         },
-    ];
+    ]
+}
 
-    let seeded_repo_slugs: HashSet<String> = repositories.iter().map(|r| r.slug.clone()).collect();
+pub fn seed() -> AppState {
+    let seeded_repo_slugs: HashSet<String> =
+        demo_repositories().iter().map(|r| r.slug.clone()).collect();
 
     let tree = seeded_tree(&seeded_repo_slugs);
     let commits = seeded_commits(&seeded_repo_slugs);
@@ -803,8 +811,6 @@ pub fn seed() -> AppState {
         .collect();
 
     AppState {
-        repositories,
-        seeded_repo_slugs,
         tree,
         file_contents,
         image_content,
