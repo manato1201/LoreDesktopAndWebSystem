@@ -298,6 +298,10 @@ pub fn build_router(shared_state: state::SharedState, config: RouterConfig) -> R
             get(handlers::get_audio),
         )
         .route(
+            "/api/repositories/{slug}/diff/{*path}",
+            get(handlers::get_diff),
+        )
+        .route(
             "/api/repositories/{slug}/commits",
             get(handlers::list_commits).post(handlers::create_commit),
         )

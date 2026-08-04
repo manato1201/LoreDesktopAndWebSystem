@@ -169,6 +169,62 @@ pub enum PrDiffFile {
     },
 }
 
+/// Wire response for `GET /api/repositories/{slug}/diff/{*path}?from=..&to=..`
+/// (see `handlers::get_diff`) — deliberately independent of `DiffLine`/
+/// `PrDiffFile` above. Those model a pull request's pre-baked, seeded diff
+/// content; this models a real line-level diff computed on demand between
+/// two actual commits (via the `similar` crate, see `handlers::get_diff`).
+/// Folding the two together would mean either giving `PrDiffFile` fields it
+/// doesn't need (`fromHash`/`toHash`/`oldLine`/`newLine`) or giving this
+/// endpoint fields it doesn't need (`PrDiffFile::Image`/`Model3d` variants)
+/// — kept as two separate, purpose-built shapes instead, per the redesign
+/// plan's explicit call-out that this stays out of the PR diff machinery.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FileDiffChangeType {
+    Added,
+    Modified,
+    Deleted,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FileDiffLineType {
+    Context,
+    Add,
+    Remove,
+}
+
+/// One line of a computed text diff. `old_line`/`new_line` are 1-based line
+/// numbers in the "from"/"to" content respectively — `None` for the side a
+/// line doesn't apply to (an added line has no `old_line`, a removed line
+/// has no `new_line`; a context line carries both).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiffLine {
+    #[serde(rename = "type")]
+    pub kind: FileDiffLineType,
+    pub text: String,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
+}
+
+/// `lines` is only populated for a genuine text `Modified` diff between two
+/// present content hashes — `None` for `Added`/`Deleted`/`Unchanged` and for
+/// any binary file kind, regardless of `change_type` (see `handlers::
+/// get_diff`'s doc comment for the full resolution rules).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub path: String,
+    pub from_hash: String,
+    pub to_hash: String,
+    pub change_type: FileDiffChangeType,
+    pub is_binary: bool,
+    pub lines: Option<Vec<FileDiffLine>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrComment {

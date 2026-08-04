@@ -23,6 +23,9 @@ axum-prometheus = "0.10.1"
 # Content hashing for the content-addressed VCS blob store — see
 # src/content_hash.rs / src/blob_store.rs.
 sha2 = "0.10"
+# Line-level text diffing for the new diff endpoint — see src/handlers.rs's
+# get_diff / vcs_store.rs.
+similar = "3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
