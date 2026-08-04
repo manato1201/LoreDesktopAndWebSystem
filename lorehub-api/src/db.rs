@@ -1,15 +1,32 @@
-//! Persistence for `AppState`.
+//! Persistence for `AppState` and (as of the VCS redesign) the real,
+//! normalized VCS tables.
 //!
-//! Rather than fully normalizing every nested type (`TreeNode`,
-//! `PullRequest`'s comments/diff files, etc.) into relational tables, each
-//! top-level field of `AppState` is stored as one JSON blob in a single
-//! `kv_store` table, keyed by field name. This is a deliberate scope
-//! trade-off for a demo backend: it gets genuine restart-survival with a
-//! small, low-risk change (`AppState` and every handler's read path stay
-//! exactly as they were), at the cost of not being able to query/index
-//! individual rows in SQL. A production version would normalize the
-//! frequently-queried pieces (org_members, access_entries, sessions,
-//! audit_log at least) into real tables.
+//! Two different persistence strategies coexist in this database, by
+//! deliberate scope decision (see the plan's "既存の非VCSデータ...は対象外"
+//! note):
+//!
+//! - **VCS data is real relational SQL.** `repositories`, `file_blobs`,
+//!   `branches`, `current_branch`, `commits`, `commit_files`, `tree_entries`,
+//!   `pending_changes`, `staged_content`, and `file_locks` are proper tables
+//!   with foreign keys (`ON DELETE CASCADE` on every `repo_slug` reference —
+//!   see `migrations/0001_vcs_schema.sql`, the source of truth for the exact
+//!   schema). They're read and written directly by `repo_store.rs`,
+//!   `vcs_store.rs`, and `lock_store.rs` — no `AppState` lock or `kv_store`
+//!   blob involved at all. This is what makes branch-aware reads, real
+//!   content hashing, and cascade deletes possible.
+//! - **Everything else is still one JSON blob per `AppState` field**, stored
+//!   in a single `kv_store` table keyed by field name (`file_contents`,
+//!   `image_content`, `pull_requests`, `access_entries`, `org_members`,
+//!   `storage`, `audit_log`, `credentials`, `sessions`, `refresh_tokens`,
+//!   `invites`, `password_resets`). These were out of scope for the VCS
+//!   redesign — they don't need branch-aware reads, content-addressing, or
+//!   relational querying the way VCS data does — so they keep the original
+//!   trade-off: genuine restart-survival with a small, low-risk
+//!   implementation (`AppState` and every handler's read path stay exactly
+//!   as they were), at the cost of not being able to query/index individual
+//!   rows in SQL. A future pass could normalize the frequently-queried
+//!   pieces (org_members, access_entries, sessions, audit_log at least) into
+//!   real tables the same way the VCS data now is.
 use std::str::FromStr;
 
 use serde::Serialize;
@@ -166,6 +183,58 @@ pub async fn load_state(pool: &SqlitePool) -> Option<AppState> {
         invites: load_blob(pool, "invites").await.unwrap_or_default(),
         password_resets: load_blob(pool, "password_resets").await.unwrap_or_default(),
     })
+}
+
+/// The `kv_store` keys that pre-redesign `save_all`/`save_blob` calls wrote
+/// under (`AppState.tree`/`commits`/`branches`/`current_branch`/
+/// `pending_changes`/`uploaded_images`/`uploaded_text`/`uploaded_audio`, plus
+/// the `repositories`/`seeded_repo_slugs` identity blobs — see the `git log
+/// -p` history of this file for every one of these as a real, once-written
+/// key). Phases 2-4 of the VCS redesign moved all of this data into real SQL
+/// tables and stopped writing any of these keys, but a `lorehub.db` created
+/// before this whole redesign began would still have the rows sitting inert.
+const LEGACY_KV_STORE_KEYS: &[&str] = &[
+    "tree",
+    "commits",
+    "branches",
+    "current_branch",
+    "pending_changes",
+    "uploaded_images",
+    "uploaded_text",
+    "uploaded_audio",
+    "repositories",
+    "seeded_repo_slugs",
+];
+
+/// One-time startup housekeeping, in the same "safe to call unconditionally
+/// on every restart" spirit as [`migrate_or_seed_repositories`]: deletes any
+/// stale row left behind under [`LEGACY_KV_STORE_KEYS`]. A `DELETE` on keys
+/// that were never written (a genuinely fresh `lorehub.db`) or were already
+/// cleaned up on a previous restart is simply a no-op — nothing left in
+/// `AppState`, `db::load_state`, or `db::save_all` reads or writes any of
+/// these keys anymore, so removing the rows can't affect current behavior.
+///
+/// Must run *after* [`migrate_or_seed_repositories`] (see `main`) — that
+/// function's one-time legacy-identity-migration path still reads the
+/// `"repositories"` key on a pre-Phase-2 database, so deleting it first would
+/// silently break that import for anyone upgrading straight from before the
+/// VCS redesign.
+pub async fn cleanup_legacy_kv_store_keys(pool: &SqlitePool) {
+    let placeholders = LEGACY_KV_STORE_KEYS
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("DELETE FROM kv_store WHERE key IN ({placeholders})");
+
+    let mut query = sqlx::query(&sql);
+    for key in LEGACY_KV_STORE_KEYS {
+        query = query.bind(*key);
+    }
+    query
+        .execute(pool)
+        .await
+        .expect("cleanup legacy kv_store keys");
 }
 
 pub async fn save_all(pool: &SqlitePool, state: &AppState) {

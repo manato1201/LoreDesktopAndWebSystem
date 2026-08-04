@@ -494,7 +494,8 @@
               <div class="label">auth · repos · tree · commits · pulls · access-control · org</div>
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <span class="chip">RwLock&lt;AppState&gt;</span>
-                <span class="chip">SQLite kv_store</span>
+                <span class="chip">SQLite kv_store(非VCS)</span>
+                <span class="chip">正規化SQL(VCS)</span>
               </div>
             </div>
 
@@ -606,7 +607,7 @@
     <section id="data-model">
       <div class="eyebrow">05 / State</div>
       <h2>データモデル(AppState)</h2>
-      <p class="lede">正規化せず、フィールドごとに1つのJSONブロブとして <code>kv_store</code> に保存する方式(意図的なトレードオフ、詳細は技術資料 §5)。</p>
+      <p class="lede">非VCSデータ(PR一覧・監査ログ・組織メンバー等)は正規化せず、フィールドごとに1つのJSONブロブとして <code>kv_store</code> に保存(意図的なトレードオフ、詳細は技術資料 §5)。VCSデータ(Repository・コミット・ブランチ・ツリー)は実コンテンツアドレス方式の正規化SQLテーブルとして保存。</p>
       <div class="model-grid">
         <div class="card model-card">
           <div class="name">Repository</div>
