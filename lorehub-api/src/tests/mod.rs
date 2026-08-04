@@ -38,6 +38,7 @@ pub const DEFAULT_TEST_PEER_ADDR: SocketAddr = SocketAddr::new(
 mod access_control;
 mod auth;
 mod authz;
+mod blob_dedup;
 mod body_limit;
 mod change_password;
 mod health;

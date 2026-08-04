@@ -507,6 +507,24 @@ pub async fn delete_repository(
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// Checks `staged_content` (the "current uploaded content" pointer for
+/// `path` in `slug`'s working copy — see `blob_meta_store.rs`) and, if a row
+/// exists there, loads the actual bytes from the filesystem blob store (see
+/// `blob_store.rs`). Returns `None` when nothing has ever been uploaded to
+/// this path in this repo (or, defensively, if `staged_content` points at a
+/// blob that's somehow missing from disk) — either way the caller falls back
+/// to the org-wide seeded content maps exactly as before this helper
+/// existed. Shared by `get_file_content`/`get_image`/`get_audio`, unifying
+/// what used to be three independently-maintained `uploaded_*` map lookups.
+async fn resolve_uploaded_content(ctx: &SharedState, slug: &str, path: &str) -> Option<Vec<u8>> {
+    let (content_hash, _size_bytes) =
+        crate::blob_meta_store::get_staged_content(&ctx.db, slug, path).await?;
+    let base_dir = std::path::Path::new(crate::blob_store::BASE_DIR);
+    crate::blob_store::load_blob(base_dir, slug, &content_hash)
+        .await
+        .ok()
+}
+
 pub async fn get_file_content(
     State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
@@ -521,13 +539,15 @@ pub async fn get_file_content(
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
+    drop(state);
 
-    // User-uploaded content takes priority over the fixed demo text dataset —
+    // Uploaded content takes priority over the fixed demo text dataset —
     // same fallback structure as `get_image`.
-    if let Some(bytes) = state.uploaded_text.get(&slug).and_then(|m| m.get(&path)) {
-        return ranged_bytes_response(&headers, "text/plain; charset=utf-8", bytes);
+    if let Some(bytes) = resolve_uploaded_content(&ctx, &slug, &path).await {
+        return ranged_bytes_response(&headers, "text/plain; charset=utf-8", &bytes);
     }
 
+    let state = ctx.read().await;
     match state.file_contents.get(&path) {
         Some(content) => {
             ranged_bytes_response(&headers, "text/plain; charset=utf-8", content.as_bytes())
@@ -719,14 +739,16 @@ pub async fn get_image(
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
+    drop(state);
 
-    // User-uploaded content takes priority over the fixed demo SVGs — an
-    // upload to a path that happens to match a demo image should show what
-    // the user actually uploaded, not the seeded placeholder.
-    if let Some(bytes) = state.uploaded_images.get(&slug).and_then(|m| m.get(&path)) {
-        return ranged_bytes_response(&headers, content_type_for_path(&path), bytes);
+    // Uploaded content takes priority over the fixed demo SVGs — an upload
+    // to a path that happens to match a demo image should show what the
+    // user actually uploaded, not the seeded placeholder.
+    if let Some(bytes) = resolve_uploaded_content(&ctx, &slug, &path).await {
+        return ranged_bytes_response(&headers, content_type_for_path(&path), &bytes);
     }
 
+    let state = ctx.read().await;
     match state.image_content.get(&path) {
         Some(svg) => ranged_bytes_response(&headers, "image/svg+xml", svg.as_bytes()),
         None => not_found("no image content for this file"),
@@ -760,16 +782,19 @@ pub struct UploadImageRequest {
     pub content_base64: String,
 }
 
-/// Stores raw uploaded file bytes for `slug`/`path`, served back afterwards
-/// by `get_image`/`get_file_content`/`get_audio` (see there for the
-/// per-repo-keyed lookup and content-type inference). This is the write
-/// side of LoreForge Client's "Add File" flow — the client base64-encodes a
-/// local file and posts it here, then stages it via the existing
-/// `stage_change` endpoint. The request body shape doesn't carry an
-/// explicit kind; which of `uploaded_images`/`uploaded_text`/
-/// `uploaded_audio` the bytes land in is inferred from `path`'s extension
-/// via `upload_kind_for_path`, the same way `get_image`'s content-type
-/// inference already works from extension alone.
+/// Stores raw uploaded file bytes for `slug`/`path` as a content-addressed
+/// blob (see `content_hash.rs`/`blob_store.rs`/`blob_meta_store.rs`), served
+/// back afterwards by `get_image`/`get_file_content`/`get_audio` via
+/// `resolve_uploaded_content`. This is the write side of LoreForge Client's
+/// "Add File" flow — the client base64-encodes a local file and posts it
+/// here, then stages it via the existing `stage_change` endpoint.
+///
+/// Unlike the old per-kind-map write path, storage here is kind-agnostic:
+/// every upload's bytes go through the same hash -> filesystem -> metadata
+/// pipeline regardless of file type. `upload_kind_for_path` is still called
+/// (its result just isn't consulted yet) purely to keep the extension-
+/// sniffing logic alive for Phase 4, which needs it to populate
+/// `tree_entries.file_kind` at commit time.
 pub async fn upload_file(
     State(ctx): State<SharedState>,
     axum::Extension(user): axum::Extension<OrgMember>,
@@ -781,16 +806,18 @@ pub async fn upload_file(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
 
     let path = body.path.trim().to_string();
     if path.is_empty() {
         return bad_request("path is required");
     }
+
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &path, PermissionLevel::Write) {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Write, &path).await;
     }
+    drop(state);
 
     let bytes = match base64::engine::general_purpose::STANDARD.decode(&body.content_base64) {
         Ok(b) => b,
@@ -800,41 +827,34 @@ pub async fn upload_file(
         return bad_request("uploaded file is empty");
     }
 
-    let kind = upload_kind_for_path(&path);
-    match kind {
-        UploadKind::Text => {
-            state
-                .uploaded_text
-                .entry(slug.clone())
-                .or_default()
-                .insert(path.clone(), bytes);
-        }
-        UploadKind::Audio => {
-            state
-                .uploaded_audio
-                .entry(slug.clone())
-                .or_default()
-                .insert(path.clone(), bytes);
-        }
-        UploadKind::Image => {
-            state
-                .uploaded_images
-                .entry(slug.clone())
-                .or_default()
-                .insert(path.clone(), bytes);
-        }
+    // See doc comment above: not yet used to branch storage, only kept alive
+    // for Phase 4's `tree_entries.file_kind`.
+    let _kind = upload_kind_for_path(&path);
+
+    let content_hash = crate::content_hash::sha256_hex(&bytes);
+    let base_dir = std::path::Path::new(crate::blob_store::BASE_DIR);
+    if let Err(err) = crate::blob_store::save_blob(base_dir, &slug, &content_hash, &bytes).await {
+        tracing::error!(
+            repo_slug = %slug,
+            path = %path,
+            error = %err,
+            "failed to write uploaded blob to disk"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "failed to store uploaded file" })),
+        )
+            .into_response();
     }
+    let size_bytes = bytes.len() as i64;
+    crate::blob_meta_store::record_blob(&ctx.db, &slug, &content_hash, size_bytes).await;
+    crate::blob_meta_store::upsert_staged_content(&ctx.db, &slug, &path, &content_hash, size_bytes)
+        .await;
 
+    let mut state = ctx.write().await;
     state.record_audit(&user.name, "uploaded", &path);
-
-    let (blob_key, blob_value): (&str, HashMap<String, HashMap<String, Vec<u8>>>) = match kind {
-        UploadKind::Text => ("uploaded_text", state.uploaded_text.clone()),
-        UploadKind::Audio => ("uploaded_audio", state.uploaded_audio.clone()),
-        UploadKind::Image => ("uploaded_images", state.uploaded_images.clone()),
-    };
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, blob_key, &blob_value).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     StatusCode::CREATED.into_response()
@@ -854,13 +874,15 @@ pub async fn get_audio(
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Read, &path).await;
     }
+    drop(state);
 
-    // User-uploaded content takes priority over the fixed demo audio clip —
-    // same fallback structure as `get_image`.
-    if let Some(bytes) = state.uploaded_audio.get(&slug).and_then(|m| m.get(&path)) {
-        return ranged_bytes_response(&headers, audio_content_type_for_path(&path), bytes);
+    // Uploaded content takes priority over the fixed demo audio clip — same
+    // fallback structure as `get_image`.
+    if let Some(bytes) = resolve_uploaded_content(&ctx, &slug, &path).await {
+        return ranged_bytes_response(&headers, audio_content_type_for_path(&path), &bytes);
     }
 
+    let state = ctx.read().await;
     match state.audio_content.get(&path) {
         Some(bytes) => ranged_bytes_response(&headers, "audio/wav", bytes),
         None => not_found("no audio content for this file"),
