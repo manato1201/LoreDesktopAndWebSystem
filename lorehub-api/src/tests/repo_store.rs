@@ -98,8 +98,16 @@ async fn deleting_a_repository_cascades_to_referencing_vcs_rows() {
         .await
         .expect("query branches before delete");
     let before_count: i64 = before_row.get("count");
-    assert_eq!(
-        before_count, 1,
+    // As of Phase 4, every repository already has real branch rows (`main`
+    // plus, for seeded repos, real feature branches from `vcs_seed` — see
+    // `vcs_store::init_main_branch`/`vcs_seed::seed_demo_history`), so this
+    // is no longer exactly 1 the way it was when `branches` was still an
+    // empty, unused table (Phase 2/3). The throwaway row inserted above is
+    // still definitely present (>= 1); what this test actually cares about
+    // — the cascade wiping the table to 0 rows after delete — is unaffected
+    // either way.
+    assert!(
+        before_count >= 1,
         "throwaway branches row should be present before delete"
     );
 

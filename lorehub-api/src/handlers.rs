@@ -7,9 +7,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::auth;
+use crate::lock_store;
 use crate::models::*;
 use crate::repo_store;
 use crate::state::{SessionEntry, SharedState};
+use crate::vcs_store;
 
 fn not_found(message: &str) -> Response {
     (
@@ -425,6 +427,14 @@ pub async fn create_repository(
     )
     .await;
 
+    // Every repository needs at least an empty `main` branch row for
+    // `GET /tree`/checkout/commit to have a current branch to resolve
+    // against — see `vcs_store::init_main_branch`'s doc comment. A
+    // user-created repo intentionally gets nothing beyond this (no commits,
+    // no other branches) — matching the pre-redesign "new repos start
+    // empty" behavior.
+    vcs_store::init_main_branch(&ctx.db, &slug).await;
+
     let mut state = ctx.write().await;
     state.record_audit(&user.name, "created repository", &slug);
     let audit_log = state.audit_log.clone();
@@ -493,6 +503,25 @@ pub async fn delete_repository(
         return not_found("repository not found");
     }
 
+    // The SQL cascade above doesn't touch the filesystem — blob bytes live
+    // outside SQLite entirely (see `blob_store.rs`). Remove the repository's
+    // whole blob directory as a best-effort follow-up; a `NotFound` error
+    // (a repo that never had any uploads/commits) is expected and silent,
+    // anything else is logged but still doesn't fail the request — the SQL
+    // deletion has already committed by this point, and an orphaned blob
+    // directory on disk is a cleanup nuisance, not a correctness problem
+    // (nothing in SQL references it anymore).
+    let blob_dir = ctx.blob_base_dir.join("blobs").join(&slug);
+    if let Err(err) = tokio::fs::remove_dir_all(&blob_dir).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            repo_slug = %slug,
+            error = %err,
+            "failed to remove repository's blob directory from disk"
+        );
+    }
+
     let mut state = ctx.write().await;
     state.pull_requests.retain(|pr| pr.repo_slug != slug);
 
@@ -519,8 +548,7 @@ pub async fn delete_repository(
 async fn resolve_uploaded_content(ctx: &SharedState, slug: &str, path: &str) -> Option<Vec<u8>> {
     let (content_hash, _size_bytes) =
         crate::blob_meta_store::get_staged_content(&ctx.db, slug, path).await?;
-    let base_dir = std::path::Path::new(crate::blob_store::BASE_DIR);
-    crate::blob_store::load_blob(base_dir, slug, &content_hash)
+    crate::blob_store::load_blob(&ctx.blob_base_dir, slug, &content_hash)
         .await
         .ok()
 }
@@ -832,8 +860,9 @@ pub async fn upload_file(
     let _kind = upload_kind_for_path(&path);
 
     let content_hash = crate::content_hash::sha256_hex(&bytes);
-    let base_dir = std::path::Path::new(crate::blob_store::BASE_DIR);
-    if let Err(err) = crate::blob_store::save_blob(base_dir, &slug, &content_hash, &bytes).await {
+    if let Err(err) =
+        crate::blob_store::save_blob(&ctx.blob_base_dir, &slug, &content_hash, &bytes).await
+    {
         tracing::error!(
             repo_slug = %slug,
             path = %path,
@@ -893,8 +922,9 @@ pub async fn get_tree(State(ctx): State<SharedState>, Path(slug): Path<String>) 
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    Json(state.tree.get(&slug).cloned().unwrap_or_default()).into_response()
+    let locks = lock_store::list_locks(&ctx.db, &slug).await;
+    let tree = vcs_store::get_tree(&ctx.db, &slug, &locks).await;
+    Json(tree).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -913,50 +943,48 @@ pub async fn toggle_lock(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(&state, &user, &slug, &body.path, PermissionLevel::Lock)
     {
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Lock, &body.path).await;
     }
+    drop(state);
 
-    let locked_by = if body.lock {
-        Some(user.name.clone())
-    } else {
-        None
-    };
-    let found = state.set_lock(&slug, &body.path, locked_by.clone());
-    if !found {
+    if !vcs_store::path_exists(&ctx.db, &slug, &body.path).await {
         return not_found("file not found in tree");
     }
 
-    let action = if body.lock { "locked" } else { "unlocked" };
-    state.record_audit(&user.name, action, &body.path);
+    if body.lock {
+        lock_store::lock(&ctx.db, &slug, &body.path, &user.name).await;
+    } else {
+        lock_store::unlock(&ctx.db, &slug, &body.path).await;
+    }
 
-    let tree_for_repo = state.tree.get(&slug).cloned().unwrap_or_default();
-    let tree = state.tree.clone();
+    let action = if body.lock { "locked" } else { "unlocked" };
+    let mut state = ctx.write().await;
+    state.record_audit(&user.name, action, &body.path);
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "tree", &tree).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
-    Json(tree_for_repo).into_response()
+    let locks = lock_store::list_locks(&ctx.db, &slug).await;
+    let tree = vcs_store::get_tree(&ctx.db, &slug, &locks).await;
+    Json(tree).into_response()
 }
 
 pub async fn list_commits(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    Json(state.commits.get(&slug).cloned().unwrap_or_default()).into_response()
+    Json(vcs_store::list_commits(&ctx.db, &slug).await).into_response()
 }
 
 pub async fn list_branches(State(ctx): State<SharedState>, Path(slug): Path<String>) -> Response {
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    Json(state.branches.get(&slug).cloned().unwrap_or_default()).into_response()
+    Json(vcs_store::list_branches(&ctx.db, &slug).await).into_response()
 }
 
 pub async fn get_commit(
@@ -966,13 +994,8 @@ pub async fn get_commit(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    match state
-        .commits
-        .get(&slug)
-        .and_then(|commits| commits.iter().find(|c| c.hash == hash))
-    {
-        Some(commit) => Json(commit.clone()).into_response(),
+    match vcs_store::get_commit(&ctx.db, &slug, &hash).await {
+        Some(commit) => Json(commit).into_response(),
         None => not_found("commit not found"),
     }
 }
@@ -984,12 +1007,7 @@ pub async fn get_current_branch(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    let branch = state
-        .current_branch
-        .get(&slug)
-        .cloned()
-        .unwrap_or_else(|| "main".to_string());
+    let branch = vcs_store::get_current_branch(&ctx.db, &slug).await;
     Json(serde_json::json!({ "branch": branch })).into_response()
 }
 
@@ -1007,35 +1025,24 @@ pub async fn checkout_branch(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
 
-    let exists = state
-        .branches
-        .get(&slug)
-        .map(|branches| branches.iter().any(|b| b.name == body.branch))
-        .unwrap_or(false);
-    if !exists {
+    if !vcs_store::branch_exists(&ctx.db, &slug, &body.branch).await {
         return not_found("branch not found");
     }
 
-    state
-        .current_branch
-        .insert(slug.clone(), body.branch.clone());
+    vcs_store::set_current_branch(&ctx.db, &slug, &body.branch).await;
 
+    let mut state = ctx.write().await;
     state.record_audit(
         &user.name,
         &format!("checked out branch {} on", body.branch),
         &slug,
     );
-
-    let branch = body.branch.clone();
-    let current_branch = state.current_branch.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "current_branch", &current_branch).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
-    Json(serde_json::json!({ "branch": branch })).into_response()
+    Json(serde_json::json!({ "branch": body.branch })).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1053,54 +1060,27 @@ pub async fn create_branch(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
 
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return bad_request("name is required");
     }
 
-    let already_exists = state
-        .branches
-        .get(&slug)
-        .map(|branches| branches.iter().any(|b| b.name == name))
-        .unwrap_or(false);
-    if already_exists {
+    if vcs_store::branch_exists(&ctx.db, &slug, &name).await {
         return bad_request("branch already exists");
     }
 
-    let from_name = body.from.clone().unwrap_or_else(|| {
-        state
-            .current_branch
-            .get(&slug)
-            .cloned()
-            .unwrap_or_else(|| "main".to_string())
-    });
-
-    let head = state
-        .branches
-        .get(&slug)
-        .and_then(|branches| branches.iter().find(|b| b.name == from_name))
-        .map(|b| b.head.clone())
-        .unwrap_or_default();
-
-    let branch = Branch {
-        name: name.clone(),
-        head,
-        is_default: false,
+    let from_name = match body.from {
+        Some(from) => from,
+        None => vcs_store::get_current_branch(&ctx.db, &slug).await,
     };
-    state
-        .branches
-        .entry(slug.clone())
-        .or_default()
-        .push(branch.clone());
 
+    let branch = vcs_store::create_branch_from(&ctx.db, &slug, &name, &from_name, false).await;
+
+    let mut state = ctx.write().await;
     state.record_audit(&user.name, &format!("created branch {name} on"), &slug);
-
-    let branches = state.branches.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "branches", &branches).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     (StatusCode::CREATED, Json(branch)).into_response()
@@ -1113,15 +1093,7 @@ pub async fn get_pending_changes(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let state = ctx.read().await;
-    Json(
-        state
-            .pending_changes
-            .get(&slug)
-            .cloned()
-            .unwrap_or_default(),
-    )
-    .into_response()
+    Json(vcs_store::pending_file_changes(&ctx.db, &slug).await).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1143,7 +1115,7 @@ pub async fn stage_change(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
+    let state = ctx.read().await;
     if !crate::authz::check_path_permission(
         &state,
         &user,
@@ -1154,31 +1126,43 @@ pub async fn stage_change(
         drop(state);
         return deny_path_access(&ctx, &user, PermissionLevel::Write, &body.path).await;
     }
+    drop(state);
 
-    let entries = state.pending_changes.entry(slug.clone()).or_default();
-    entries.retain(|c| c.path != body.path);
     if body.staged {
-        entries.push(FileChange {
-            path: body.path.clone(),
-            change_type: body.change_type,
-            size_delta_label: "—".to_string(),
-        });
+        // Pull `content_hash`/`size_bytes` from `staged_content` — the path's
+        // current uploaded working-copy content — at stage time (git-index
+        // semantics: a later re-upload to the same path must not silently
+        // change what a subsequent commit captures). If nothing has ever
+        // been uploaded to this path, both are `NULL` — `create_commit`
+        // rejects committing a path staged like that (see
+        // `vcs_store::CommitError::MissingContent`), which is the whole
+        // point of this validation existing.
+        let staged = crate::blob_meta_store::get_staged_content(&ctx.db, &slug, &body.path).await;
+        let (content_hash, size_bytes) = match &staged {
+            Some((hash, size)) => (Some(hash.as_str()), Some(*size)),
+            None => (None, None),
+        };
+        vcs_store::upsert_pending_change(
+            &ctx.db,
+            &slug,
+            &body.path,
+            body.change_type,
+            content_hash,
+            size_bytes,
+        )
+        .await;
+    } else {
+        vcs_store::delete_pending_change(&ctx.db, &slug, &body.path).await;
     }
 
     let action = if body.staged { "staged" } else { "unstaged" };
+    let mut state = ctx.write().await;
     state.record_audit(&user.name, action, &body.path);
-
-    let pending_for_repo = state
-        .pending_changes
-        .get(&slug)
-        .cloned()
-        .unwrap_or_default();
-    let pending_changes = state.pending_changes.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "pending_changes", &pending_changes).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
+    let pending_for_repo = vcs_store::pending_file_changes(&ctx.db, &slug).await;
     Json(pending_for_repo).into_response()
 }
 
@@ -1197,73 +1181,44 @@ pub async fn create_commit(
     if !repo_store::exists(&ctx.db, &slug).await {
         return not_found("repository not found");
     }
-    let mut state = ctx.write().await;
 
     let message = body.message.trim().to_string();
     if message.is_empty() {
         return bad_request("message is required");
     }
+    let description = body.description.filter(|d| !d.trim().is_empty());
 
-    let changed_files = state
-        .pending_changes
-        .get(&slug)
-        .cloned()
-        .unwrap_or_default();
-    if changed_files.is_empty() {
-        return bad_request("nothing to commit");
-    }
+    let branch_name = vcs_store::get_current_branch(&ctx.db, &slug).await;
 
-    let branch_name = state
-        .current_branch
-        .get(&slug)
-        .cloned()
-        .unwrap_or_else(|| "main".to_string());
-    let parent = state
-        .branches
-        .get(&slug)
-        .and_then(|branches| branches.iter().find(|b| b.name == branch_name))
-        .map(|b| b.head.clone());
-
-    let hash = auth::generate_commit_hash();
-    let short_hash = hash[..7].to_string();
-
-    let commit = Commit {
-        hash: hash.clone(),
-        short_hash,
-        message,
-        description: body.description.filter(|d| !d.trim().is_empty()),
-        author: user.name.clone(),
-        author_initials: user.initials.clone(),
-        timestamp: "just now".to_string(),
-        changed_files,
-        branch: branch_name.clone(),
-        parents: parent.into_iter().collect(),
+    let new_commit = vcs_store::NewCommit {
+        repo_slug: &slug,
+        branch_name: &branch_name,
+        author_email: &user.email,
+        author_name: &user.name,
+        author_initials: &user.initials,
+        message: &message,
+        description: description.as_deref(),
+        created_at: auth::current_unix_time(),
     };
 
-    state
-        .commits
-        .entry(slug.clone())
-        .or_default()
-        .push(commit.clone());
+    let commit = match vcs_store::create_commit(&ctx.db, new_commit).await {
+        Ok(commit) => commit,
+        Err(vcs_store::CommitError::NothingStaged) => return bad_request("nothing to commit"),
+        Err(vcs_store::CommitError::MissingContent(paths)) => {
+            return bad_request(&format!(
+                "the following staged path(s) have no uploaded content: {}",
+                paths.join(", ")
+            ));
+        }
+        Err(vcs_store::CommitError::BranchNotFound) => {
+            return not_found("current branch not found");
+        }
+    };
 
-    if let Some(branches) = state.branches.get_mut(&slug)
-        && let Some(branch) = branches.iter_mut().find(|b| b.name == branch_name)
-    {
-        branch.head = hash;
-    }
-
-    state.pending_changes.insert(slug.clone(), Vec::new());
-
+    let mut state = ctx.write().await;
     state.record_audit(&user.name, "committed to", &slug);
-
-    let commits = state.commits.clone();
-    let branches = state.branches.clone();
-    let pending_changes = state.pending_changes.clone();
     let audit_log = state.audit_log.clone();
     drop(state);
-    crate::db::save_blob(&ctx.db, "commits", &commits).await;
-    crate::db::save_blob(&ctx.db, "branches", &branches).await;
-    crate::db::save_blob(&ctx.db, "pending_changes", &pending_changes).await;
     crate::db::save_blob(&ctx.db, "audit_log", &audit_log).await;
 
     (StatusCode::CREATED, Json(commit)).into_response()
