@@ -17,8 +17,17 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 enable_testing()
 
+# Windows exe/taskbar icon. `.rc` files are a Windows-only resource-compiler
+# input (MSVC's `rc.exe`), guarded here since qt_add_executable's SOURCES
+# would otherwise pass it straight through to a non-Windows compiler on any
+# future non-Windows build of this currently Windows-only project.
+if(WIN32)
+    set(LOREFORGE_CLIENT_WIN32_RESOURCES resources/app.rc)
+endif()
+
 qt_add_executable(LoreForgeClient
     src/main.cpp
+    ${LOREFORGE_CLIENT_WIN32_RESOURCES}
 )
 
 # pragma Singleton in Theme.qml isn't enough on its own — qt_add_qml_module
