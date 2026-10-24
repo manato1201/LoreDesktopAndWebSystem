@@ -258,6 +258,8 @@ What distinguishes Spotify is its pill-and-circle geometry. Primary buttons use 
 
 ## 10. Cross-Platform Token Mapping
 
+> **生成物です**: 値の定義元は [`design-tokens/tokens.json`](./design-tokens/tokens.json) の1か所。`node tools/gen-tokens.mjs` で `lorehub-web/src/app/tokens.generated.css` と両デスクトップアプリの `Theme.qml` を生成する。生成物を手で編集しない(CIの `node tools/gen-tokens.mjs --check` が差分を検出する)。以下の表は役割の説明。
+
 LoreHub(CSS変数/Tailwind)と LoreForge Client / Server Admin(QML `Theme.qml` シングルトン想定)の対応表。値(hex/px/weight)は共通、命名規約のみプラットフォームごとに異なる。
 
 ### Colors

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { shortHash } from "@/lib/format";
 import { buildCommitGraph, type LaneStatus } from "@/lib/graph-layout";
 import type { Branch, Commit } from "@/lib/types";
 
@@ -143,7 +144,7 @@ export function BranchGraph({
                   {node.commit.message}
                 </span>
                 <span className="truncate text-[10.5px] text-text-secondary">
-                  {node.commit.shortHash} · {node.commit.author}
+                  {shortHash(node.commit.hash)} · {node.commit.author}
                 </span>
               </Link>
             ))}

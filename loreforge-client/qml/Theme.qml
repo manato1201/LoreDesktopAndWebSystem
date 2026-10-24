@@ -1,9 +1,8 @@
 pragma Singleton
 import QtQuick
 
-// Mirrors ../../DESIGN.md §10 Cross-Platform Token Mapping. Keep values in
-// sync with that table and with lorehub-web's globals.css — it is the
-// shared source of truth across the ecosystem.
+// Generated from design-tokens/tokens.json by tools/gen-tokens.mjs. Do not edit by hand.
+// Roles are documented in DESIGN.md section 10.
 QtObject {
     readonly property color colorBackgroundBase: "#121212"
     readonly property color colorSurface: "#181818"

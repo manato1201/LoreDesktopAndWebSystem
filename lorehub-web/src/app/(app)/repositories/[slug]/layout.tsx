@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { PageHeader } from "@/components/PageHeader";
 import { RepoTabs } from "@/components/RepoTabs";
 import { getRepository } from "@/lib/api";
@@ -17,6 +18,12 @@ export default async function RepositoryLayout(
 
   return (
     <>
+      <Breadcrumb
+        items={[
+          { label: "Repositories", href: "/" },
+          { label: repository.name },
+        ]}
+      />
       <PageHeader
         title={repository.name}
         subtitle={`${repository.organization} · ${repository.sizeLabel} · Updated ${repository.updatedAt}`}

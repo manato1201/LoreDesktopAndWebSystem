@@ -43,6 +43,8 @@ pub enum TreeNode {
         path: String,
         name: String,
         size_label: String,
+        #[serde(default)]
+        size_bytes: i64,
         updated_at: String,
         locked_by: Option<String>,
     },
@@ -51,6 +53,8 @@ pub enum TreeNode {
         path: String,
         name: String,
         size_label: String,
+        #[serde(default)]
+        size_bytes: i64,
         updated_at: String,
         locked_by: Option<String>,
     },
@@ -59,6 +63,8 @@ pub enum TreeNode {
         path: String,
         name: String,
         size_label: String,
+        #[serde(default)]
+        size_bytes: i64,
         updated_at: String,
         locked_by: Option<String>,
     },
@@ -67,6 +73,8 @@ pub enum TreeNode {
         path: String,
         name: String,
         size_label: String,
+        #[serde(default)]
+        size_bytes: i64,
         updated_at: String,
         locked_by: Option<String>,
     },
@@ -75,6 +83,8 @@ pub enum TreeNode {
         path: String,
         name: String,
         size_label: String,
+        #[serde(default)]
+        size_bytes: i64,
         updated_at: String,
         locked_by: Option<String>,
     },
@@ -107,6 +117,11 @@ pub struct Commit {
     pub author: String,
     pub author_initials: String,
     pub timestamp: String,
+    /// Unix seconds. `timestamp` above is the human-readable relative form
+    /// ("3h ago"); clients that want the exact time (tooltips, screen
+    /// readers) format this instead of re-deriving it from the label.
+    #[serde(default)]
+    pub created_at: i64,
     pub changed_files: Vec<FileChange>,
     pub branch: String,
     pub parents: Vec<String>,

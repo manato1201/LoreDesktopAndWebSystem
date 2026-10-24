@@ -23,6 +23,8 @@ export type FileTreeNode = {
   path: string;
   name: string;
   sizeLabel: string;
+  /** Exact size; `sizeLabel` is its human-readable form. */
+  sizeBytes: number;
   updatedAt: string;
   lockedBy: string | null;
 };
@@ -44,7 +46,10 @@ export type Commit = {
   description?: string;
   author: string;
   authorInitials: string;
+  /** Relative label ("3h ago"). Use `createdAt` for the exact time. */
   timestamp: string;
+  /** Unix seconds. */
+  createdAt: number;
   changedFiles: FileChange[];
   branch: string;
   parents: string[];

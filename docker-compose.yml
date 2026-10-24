@@ -38,6 +38,16 @@ services:
     env_file:
       - path: .env
         required: false
+    # Privilege inventory (IMPROVEMENT_PLAN_2026-10 L6): neither service is
+    # privileged, mounts a host path, or needs a Linux capability — both run
+    # as an unprivileged user and bind ports above 1024, and lorehub-api's
+    # only writable path is the named volume. So drop every capability and
+    # forbid privilege escalation; a compromised process then has nothing
+    # extra to abuse.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "4000:4000"
     # Reuses the `HEALTHCHECK` baked into the image (see
@@ -78,6 +88,11 @@ services:
     depends_on:
       lorehub-api:
         condition: service_healthy
+    # See the privilege inventory on lorehub-api above; same reasoning.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3000:3000"
 
