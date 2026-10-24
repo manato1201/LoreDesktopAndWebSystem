@@ -786,3 +786,65 @@ fn find_tree_node<'a>(tree: &'a serde_json::Value, path: &str) -> Option<&'a ser
     }
     None
 }
+
+/// `createdAt` (unix seconds) on `Commit` and `sizeBytes` on file tree nodes
+/// are what lets clients show an exact time on hover and stack storage by
+/// file kind without parsing the human-readable `timestamp` / `sizeLabel`
+/// strings. Both must carry real values, not zero defaults.
+#[tokio::test]
+async fn commit_and_tree_nodes_expose_created_at_and_size_bytes() {
+    let app = test_app().await;
+    let cookie = login_cookie(&app, DEMO_EMAIL).await;
+
+    let content = b"exactly twenty-eight byte";
+    upload(&app, &cookie, SEEDED_SLUG, "notes/sizing.txt", content).await;
+    stage(&app, &cookie, SEEDED_SLUG, "notes/sizing.txt", "added").await;
+    let created = commit(&app, &cookie, SEEDED_SLUG, "Add sizing notes").await;
+
+    let created_at = created["createdAt"]
+        .as_i64()
+        .expect("createdAt is a number");
+    assert!(
+        created_at > 1_700_000_000,
+        "createdAt should be a real unix time, got {created_at}"
+    );
+
+    // The commit list and single-commit reads carry it too, not only the
+    // create response.
+    let commits = body_json(
+        send(
+            &app,
+            plain_request(
+                "GET",
+                &format!("/api/repositories/{SEEDED_SLUG}/commits"),
+                Some(&cookie),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        commits
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["createdAt"].as_i64().unwrap_or(0) > 0),
+        "every listed commit should carry createdAt: {commits:#}"
+    );
+
+    let tree = body_json(
+        send(
+            &app,
+            plain_request(
+                "GET",
+                &format!("/api/repositories/{SEEDED_SLUG}/tree"),
+                Some(&cookie),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let node = find_tree_node(&tree, "notes/sizing.txt")
+        .unwrap_or_else(|| panic!("notes/sizing.txt in tree: {tree:#}"));
+    assert_eq!(node["sizeBytes"], content.len() as i64);
+}

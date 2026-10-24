@@ -1,8 +1,12 @@
 import { notFound } from "next/navigation";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { ChangedFileRow } from "@/components/ChangedFileRow";
+import { CopyableHash } from "@/components/CopyableHash";
+import { RelativeTime } from "@/components/RelativeTime";
 import { getCommit } from "@/lib/api";
 import { getSessionCookieHeader } from "@/lib/auth-server";
+import { shortHash } from "@/lib/format";
 
 export default async function CommitDetailPage(
   props: PageProps<"/repositories/[slug]/commits/[hash]">,
@@ -17,6 +21,12 @@ export default async function CommitDetailPage(
 
   return (
     <div className="flex flex-col gap-6">
+      <Breadcrumb
+        items={[
+          { label: "Commits", href: `/repositories/${slug}/commits` },
+          { label: shortHash(commit.hash) },
+        ]}
+      />
       <div className="flex items-start gap-3 rounded-comfortable bg-surface p-5">
         <AuthorAvatar initials={commit.authorInitials} className="mt-0.5" />
         <div className="min-w-0 flex-1">
@@ -29,12 +39,14 @@ export default async function CommitDetailPage(
             </p>
           )}
           <p className="mt-2 text-xs text-text-secondary">
-            {commit.author} committed {commit.timestamp}
+            {commit.author} committed{" "}
+            <RelativeTime
+              label={commit.timestamp}
+              unixSeconds={commit.createdAt}
+            />
           </p>
         </div>
-        <code className="shrink-0 rounded-subtle bg-surface-interactive px-2 py-1 text-xs text-text-secondary">
-          {commit.hash}
-        </code>
+        <CopyableHash hash={commit.hash} className="shrink-0" />
       </div>
 
       <div>

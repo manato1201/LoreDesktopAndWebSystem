@@ -487,6 +487,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                 }
                 Trie::File(entry) => {
                     let size_label = format_size_label(entry.size_bytes);
+                    let size_bytes = entry.size_bytes;
                     let updated_at = format_relative_time(now, entry.updated_at);
                     let locked_by = locks.get(&path).cloned();
                     let node = match entry.file_kind.as_str() {
@@ -494,6 +495,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                             path: path.clone(),
                             name,
                             size_label,
+                            size_bytes,
                             updated_at,
                             locked_by,
                         },
@@ -501,6 +503,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                             path: path.clone(),
                             name,
                             size_label,
+                            size_bytes,
                             updated_at,
                             locked_by,
                         },
@@ -508,6 +511,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                             path: path.clone(),
                             name,
                             size_label,
+                            size_bytes,
                             updated_at,
                             locked_by,
                         },
@@ -515,6 +519,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                             path: path.clone(),
                             name,
                             size_label,
+                            size_bytes,
                             updated_at,
                             locked_by,
                         },
@@ -522,6 +527,7 @@ fn build_tree(entries: Vec<FlatEntry>, locks: &HashMap<String, String>, now: i64
                             path: path.clone(),
                             name,
                             size_label,
+                            size_bytes,
                             updated_at,
                             locked_by,
                         },
@@ -908,6 +914,7 @@ pub async fn create_commit(pool: &SqlitePool, new: NewCommit<'_>) -> Result<Comm
         author: new.author_name.to_string(),
         author_initials: new.author_initials.to_string(),
         timestamp: format_relative_time(crate::auth::current_unix_time(), new.created_at),
+        created_at: new.created_at,
         changed_files,
         branch: new.branch_name.to_string(),
         parents: parent_hash.into_iter().collect(),
@@ -962,6 +969,7 @@ fn row_to_commit_shell(row: &SqliteRow, now: i64) -> Commit {
         author: row.get("author_name"),
         author_initials: row.get("author_initials"),
         timestamp: format_relative_time(now, created_at),
+        created_at,
         changed_files: Vec::new(),
         branch: row.get("branch_name"),
         parents: row

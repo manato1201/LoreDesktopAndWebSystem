@@ -1,41 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Design tokens — mirrors the Cross-Platform Token Mapping in
- * ../../../DESIGN.md §10. Keep values in sync with that table; it is the
- * source of truth shared with the Qt/QML clients.
+ * Design tokens live in design-tokens/tokens.json and are generated into
+ * tokens.generated.css (and the Qt Theme.qml files) by tools/gen-tokens.mjs.
+ * Change a value there, not here.
  */
-:root {
-  --color-bg-base: #121212;
-  --color-surface: #181818;
-  --color-surface-interactive: #1f1f1f;
-  --color-surface-elevated: #252525;
-
-  --color-accent: #1ed760;
-  --color-accent-border: #1db954;
-
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #b3b3b3;
-
-  --color-border: #4d4d4d;
-  --color-border-light: #7c7c7c;
-
-  --color-negative: #f3727f;
-  --color-warning: #ffa42b;
-  --color-announcement: #539df5;
-
-  --radius-subtle: 4px;
-  --radius-standard: 6px;
-  --radius-comfortable: 8px;
-  --radius-pill: 500px;
-
-  --spacing-unit: 8px;
-
-  --shadow-medium: rgba(0, 0, 0, 0.3) 0px 8px 8px;
-  --shadow-heavy: rgba(0, 0, 0, 0.5) 0px 8px 24px;
-
-  --font-sans: var(--font-inter);
-}
+@import "./tokens.generated.css";
 
 @theme inline {
   --color-bg-base: var(--color-bg-base);
@@ -68,6 +38,25 @@ body {
   background: var(--color-bg-base);
   color: var(--color-text-primary);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/*
+ * The 404 fish drifts slowly. transform only (QUALITY_STANDARDS.md §3), and
+ * not at all when the OS asks for reduced motion (§4).
+ */
+@keyframes lore-swim {
+  from {
+    transform: translateX(-8px);
+  }
+  to {
+    transform: translateX(8px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lore-swim {
+    animation: lore-swim 5s ease-in-out infinite alternate;
+  }
 }
 
 /* QUALITY_STANDARDS.md §2 — never remove the focus outline on dark surfaces */

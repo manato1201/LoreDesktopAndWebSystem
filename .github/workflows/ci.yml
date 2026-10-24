@@ -35,6 +35,22 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
+  design-tokens:
+    name: design-tokens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The Web CSS and both Qt Theme.qml files are generated from
+      # design-tokens/tokens.json; this fails if one was edited by hand or
+      # tokens.json changed without regenerating.
+      - name: tokens are in sync
+        run: node tools/gen-tokens.mjs --check
+
   lorehub-web:
     name: lorehub-web
     runs-on: ubuntu-latest

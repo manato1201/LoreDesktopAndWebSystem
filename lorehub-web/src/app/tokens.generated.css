@@ -1,0 +1,28 @@
+/* Generated from design-tokens/tokens.json by tools/gen-tokens.mjs. Do not edit by hand. */
+:root {
+  --color-bg-base: #121212;
+  --color-surface: #181818;
+  --color-surface-interactive: #1f1f1f;
+  --color-surface-elevated: #252525;
+  --color-accent: #1ed760;
+  --color-accent-border: #1db954;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #b3b3b3;
+  --color-border: #4d4d4d;
+  --color-border-light: #7c7c7c;
+  --color-negative: #f3727f;
+  --color-warning: #ffa42b;
+  --color-announcement: #539df5;
+
+  --radius-subtle: 4px;
+  --radius-standard: 6px;
+  --radius-comfortable: 8px;
+  --radius-pill: 500px;
+
+  --spacing-unit: 8px;
+
+  --shadow-medium: rgba(0, 0, 0, 0.3) 0px 8px 8px;
+  --shadow-heavy: rgba(0, 0, 0, 0.5) 0px 8px 24px;
+
+  --font-sans: var(--font-inter);
+}

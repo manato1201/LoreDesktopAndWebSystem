@@ -194,6 +194,8 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 
 `tree`/`commits`/`branches` は当初 `AppState` 内のリポジトリごとの `HashMap<slug, Vec<T>>` だったが、VCS再設計により実コンテンツアドレス方式の正規化SQLテーブル(`commits`/`branches`/`commit_files`/`tree_entries`/`file_blobs`/`pending_changes`/`staged_content`など)へ全面移行した(正確なスキーマは `lorehub-api/migrations/0001_vcs_schema.sql` を参照)。GETレスポンスの形状は変更なし——値だけ本物になった(`hash`は40→64桁hex、`shortHash`は7→12桁、`sizeDeltaLabel`は常に`"—"`だったのが実計算値になった)。
 
+加えて2フィールドを追加した(既存フィールドは不変、`#[serde(default)]`付き): `Commit.createdAt`(Unix秒。`timestamp`は "3h ago" 形式の相対ラベルのままで、正確な時刻が要るツールチップ・読み上げ用)と、ファイルノード(`text`/`image`/`model3d`/`audio`/`binary`)の `sizeBytes`(`sizeLabel`の元の数値。右サマリの種類別容量の集計に使う)。Webは `shortHash` ではなく `hash` の先頭7桁を表示し、クリックで全体をコピーする。
+
 - `POST /api/repositories/{slug}/tree/stage` — body: `{ "path": "...", "changeType": "added"|"modified"|"deleted", "staged": true|false }`。`toggle_lock` と同じパターンでパスごとの保留変更(`pending_changes`テーブル)を追加/削除。ステージ時点で `staged_content` テーブルから実際の `content_hash`/`size_bytes` を確定する。
 - `POST /api/repositories/{slug}/commits` — body: `{ "message": "...", "description": "" }`。保留変更が空なら `400`。追加/変更パスに未アップロードのコンテンツ(`content_hash IS NULL`)が残っていれば `400`。`commit_hash` は `repo_slug`+親hash+ブランチ+author+message+description+ソート済み変更一覧+作成時刻からSHA-256で実際に導出される64桁hex(旧実装の`rand` crateによる40桁フェイクハッシュを置き換え)。親コミットの `tree_entries` をコピーしてpending_changesを適用した新しいツリースナップショットを構築し、`commits`/`commit_files`/`tree_entries` へ書き込み、ブランチの `head_commit_hash` を更新、`pending_changes`/`staged_content` から該当パスを削除する。
 - `POST /api/repositories/{slug}/branches` — body: `{ "name": "...", "from": "main" }`。`from` 省略時は現在のブランチ。既存名なら `400`。作成した行は実際の `branches` テーブルの1行であり、`head_commit_hash` を持つ。
