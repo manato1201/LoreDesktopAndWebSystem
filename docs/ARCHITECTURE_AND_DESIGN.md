@@ -16,6 +16,10 @@
 
 ## 2. システム構成図
 
+![Lore Ecosystem のシステム構成図: 3つのクライアントが1つのRustバックエンドを共有する](diagrams/system-architecture.svg)
+
+> 図は `tools/diagrams/specs/system-architecture.mjs` から生成している(作り方は [学習資料 13](learning/13-extend-recipes.md))。以下のMermaid版は、同じ内容を文章として diff しやすい形で残したもの。
+
 ```mermaid
 graph TB
     subgraph Browser["ブラウザ"]
@@ -180,6 +184,12 @@ Web(CSR/SSR)は「失効を検知してから直す」リアクティブ方式�
 
 `get_image`/`get_image_before`/`get_audio`/`get_file_content` はいずれも `Range: bytes=<start>-<end>` リクエストヘッダを解釈し、`206 Partial Content`(`Content-Range`/`Accept-Ranges`付き)または範囲外なら `416 Range Not Satisfiable` を返す。`Range`ヘッダが無い場合は従来通り全量を `200` で返す(`Accept-Ranges: bytes` を追加で広告)。`get_file_content` はこの変更に合わせ `{"content": "..."}` のJSON包装をやめ、生の `text/plain; charset=utf-8` バイト列を直接返すよう変更した(JSONドキュメントの一部だけを切り出しても意味が無いため)。
 
+### 4.4 リポジトリ画面が表示されるまで
+
+![リポジトリ画面が表示されるまでの9手順](diagrams/request-flow.svg)
+
+Next.js のサーバーコンポーネントが、ログイン確認(`/api/auth/me`)とリポジトリの6本の取得(ツリー・コミット・ブランチ・PR×3)を `Promise.all` で同時に `lorehub-api` へ依頼する。ブラウザは組み上がった HTML を受け取るだけで、API のURLもトークンも見ない。クリックでハッシュをコピーするなどの動きは、クライアントコンポーネントとして後から有効になる。
+
 ## 5. データモデル (AppState / VCS正規化テーブル)
 
 VCS再設計(本ドキュメント執筆時点で完了済み)により、`Repository`・コミット・ブランチ・ファイルツリーは `AppState` から切り離され、実コンテンツアドレス方式の正規化SQLテーブルへ移った。`AppState` に残るのは非VCSデータのみ。
@@ -267,6 +277,14 @@ erDiagram
 
 **永続化方式**: 2方式が併存する。`pull_requests`/`access_entries`/`org_members`/`audit_log`/`sessions`など非VCSデータは、フィールドごとに1レコードのJSONブロブを `kv_store` テーブルへ保存する方式(`db.rs`)——複雑なクエリはできないが、Rust側の構造体をそのまま `serde_json` でシリアライズでき、スキーマ移行の手間がない。今回のVCS再設計ではスコープ外と判断し、そのまま維持している。一方 `Repository`・コミット・ブランチ・ツリースナップショット・ファイル実体(SHA-256コンテンツハッシュ)などVCSデータは正規化SQLテーブル(`repositories`/`commits`/`branches`/`tree_entries`/`file_blobs`など、スキーマは `lorehub-api/migrations/0001_vcs_schema.sql` が一次情報源)として保存され、もはや `AppState` の一部ではなく `repo_store.rs`/`vcs_store.rs`/`lock_store.rs` が直接読み書きする。
 
+### 5.1 ファイルがコミットになるまで
+
+![アップロード、ステージ、コミットの3つのAPI呼び出し](diagrams/commit-flow.svg)
+
+- **アップロード**: 内容の SHA-256 を計算し、`blobs/` に保存(同じ内容は書き直さない。一時ファイルに書いてから rename するので、途中で止まっても壊れたファイルが残らない)。
+- **ステージ**: その時点の `content_hash` を `pending_changes` に確定する。ステージ後に同じパスを再アップロードしても、次のコミットが取り込む内容は変わらない(git の index と同じ)。
+- **コミット**: 1つのトランザクションの中で、ステージ済みの有無と内容の保存済みを確かめ、親のツリーに変更を適用して新しいスナップショットを作り、コミットハッシュを計算して書き込む。コミットハッシュは `repo・親・ブランチ・作者・メッセージ・変更(パス順)・時刻` の SHA-256 なので、ステージした順序では変わらない。
+
 ## 6. LoreHub Web サイトマップ
 
 ```mermaid
@@ -288,6 +306,10 @@ flowchart LR
 
 Spotify風ダークUIをベースに、LoreHub Web(CSS変数/Tailwind theme)とQt/QML(`Theme.qml`)の両方が同じ値を参照する「Cross-Platform Token Mapping」を`DESIGN.md` §10に定義。
 
+値の**定義元は `design-tokens/tokens.json` の1か所**で、Web の `tokens.generated.css` と両アプリの `Theme.qml` は `node tools/gen-tokens.mjs` で生成する。生成物を手で編集すると、CI の `--check` が失敗する。
+
+![tokens.json から Web と Qt を生成するパイプライン](diagrams/token-pipeline.svg)
+
 | トークン | 値 | Web (CSS変数) | Qt/QML |
 |---|---|---|---|
 | 背景(最深部) | `#121212` | `--color-bg-base` | `Theme.colorBackgroundBase` |
@@ -298,6 +320,21 @@ Spotify風ダークUIをベースに、LoreHub Web(CSS変数/Tailwind theme)とQ
 | エラー | `#f3727f` | `--color-negative` | `Theme.colorNegative` |
 | 標準角丸 | 6px | `--radius-standard` | `radius: Theme.radiusStandard` |
 | ピル角丸 | 500px | `--radius-pill` | `radius: height / 2`(実行時計算) |
+
+### 7.1 表示の決めごと
+
+「決めていないこと」を無くすため、繰り返し現れる表示の規則を1か所で決め、共通部品にしている(`IMPROVEMENT_DESIGN_2026-10.md` §3)。
+
+| 項目 | 決め | 実装 |
+|---|---|---|
+| ハッシュ | 先頭7桁・等幅。クリックで**全体**をコピーし、2秒のトーストを出す | `CopyableHash` / `lib/format.ts` の `shortHash` |
+| 日時 | 相対(「3時間前」)+ホバーと読み上げで絶対時刻(UTC) | `RelativeTime` / API の `Commit.createdAt` |
+| 差分 | 追加 `+` / 変更 `~` / 削除 `−`(実際のマイナス記号)を**色と併記**。色を消しても区別できる | `lib/change-symbols.ts` |
+| 権限 | 付与済みは色に加えて ✓ を出す | `PermissionMatrix` |
+| 容量 | 種類別(音声・3D・画像・その他)の積み上げバーと凡例。合計はバーと同じ数値の和 | `RepositorySummary` / `summarizeStorage` |
+| 失敗 | 書き込みの失敗は、理由(403なら「管理者のみ」)をトーストで言う | `ApiError` / `mutationErrorMessage` |
+
+![リポジトリ画面は、左がツリー、中央が内容、右がサマリの3列](diagrams/repo-screen-layout.svg)
 
 ## 8. 開発の歩み
 
@@ -316,6 +353,7 @@ timeline
     Phase 9 セキュリティ・アカウント・運用基盤 : Qt Test導入(Client/Server Admin) : パスACL実強制+RBAC : セキュアCookie/CORS/ボディ上限/ログインレート制限 : パスワード変更/招待/忘れた/リセット : Docker Compose+CI+ヘルスチェック : Prometheusメトリクス+構造化ログ : デスクトップインストーラー(NSIS/CPack)
     Phase 10 VCS実装の全面再設計 : sqlxマイグレーション基盤 : リポジトリの実テーブル化 : SHA-256コンテンツアドレスblob+重複排除 : ブランチが実際に分岐するコミット/ツリー : 実diffエンドポイント(similar crate) : 死んだコード削除+旧kv_store一括削除
     Phase 11 実デプロイでのクロスドメイン修正 : Vercel+Cloudflareトンネルで実デプロイ : Next.js rewrites()によるAPIプロキシ : NEXT_PUBLIC_USE_API_PROXYフラグへの置換
+    Phase 12 UI改善と認可の見直し : 3列のリポジトリ画面とサマリ : 表示ルールの共通部品化 : tokens.jsonからWeb/Qtを生成 : toggleの認可の穴を修正 : 書き込み失敗の可視化 : 図をコードで生成 : 学習資料
 ```
 
 ## 9. マルチエージェント並行開発
@@ -356,8 +394,8 @@ flowchart TD
 
 Phase 8で `lorehub-api` と `lorehub-web` に、Phase 9で2つのQtデスクトップアプリにも自動テストを整備し、4系統全てに自動テストが揃った。
 
-- **lorehub-api**: `tower::ServiceExt::oneshot` で実際の `Router` をTCPバインド無しにin-processで駆動する統合テスト、118件(Phase 8時点の39件から、Phase 9のセキュリティ強化・アカウントライフサイクル・Phase 10のVCS再設計それぞれの追加分を含めて増加)。各テストが独立した `sqlite://:memory:` DBと `state::seed()` を持ち、実DBファイルには一切触れない(`cargo test`並列実行下でのテスト間汚染を防ぐ設計)。認証(ログイン/リフレッシュローテーション/失効)・リポジトリCRUD・パスACL解決(祖先探索の優先順位)・パスワード変更/招待/忘れた/リセットの各フロー・ログインレート制限・ボディサイズ上限・コンテンツアドレスblobの重複排除・ブランチ分岐後の`GET /tree`差異・実diffエンドポイント・HTTP Range(206/416)をカバー。
-- **lorehub-web**: Vitest(node環境、DOM操作なしのため jsdom不要)、22件。`fetchWithRefresh` の401リトライロジック(無限ループしないこと・同時失敗時のリフレッシュ共有まで含む)、`proxy.ts` のCookie合成ヘルパー、`AudioPlayer` の時刻フォーマットをカバー。
+- **lorehub-api**: `tower::ServiceExt::oneshot` で実際の `Router` をTCPバインド無しにin-processで駆動する統合テスト、123件(Phase 8時点の39件から、Phase 9のセキュリティ強化・アカウントライフサイクル・Phase 10のVCS再設計それぞれの追加分を含めて増加)。各テストが独立した `sqlite://:memory:` DBと `state::seed()` を持ち、実DBファイルには一切触れない(`cargo test`並列実行下でのテスト間汚染を防ぐ設計)。認証(ログイン/リフレッシュローテーション/失効)・リポジトリCRUD・パスACL解決(祖先探索の優先順位)・パスワード変更/招待/忘れた/リセットの各フロー・ログインレート制限・ボディサイズ上限・コンテンツアドレスblobの重複排除・ブランチ分岐後の`GET /tree`差異・実diffエンドポイント・HTTP Range(206/416)をカバー。
+- **lorehub-web**: Vitest(node環境、DOM操作なしのため jsdom不要)、44件(整形・集計・APIエラー・記号・アスキーの木などの純粋ロジックを含む)。`fetchWithRefresh` の401リトライロジック(無限ループしないこと・同時失敗時のリフレッシュ共有まで含む)、`proxy.ts` のCookie合成ヘルパー、`AudioPlayer` の時刻フォーマットをカバー。
 - **LoreForge Client / Server Admin**: Phase 9でQt Testを導入(`LoreForgeClientTests`/`LoreForgeServerAdminTests`、`ctest`で実行)。GUI操作の自動化はこのサンドボックスでは信頼できないため対象外とし、`RepositoryTreeModel`のツリー構築・Sparse Workspace Managerのinclude/exclude/cascade-exclude、`PermissionConfigController`のJSON永続化ラウンドトリップなど、GUI非依存のモデル/コントローラロジックのみを対象にしている(詳細はTECHNICAL_REFERENCE.md §7)。
 
 **独立再検証で確認**: `cargo test`/`npm run test`/`ctest`(両デスクトップアプリ)とも全件パスをクリーンビルドから再現、`cargo test`が実DBファイル(`lorehub.db`)を作成しないことも確認済み。
@@ -387,7 +425,7 @@ flowchart TD
 
 ### 10.2 RBAC(ロールベースの組織操作ゲート)
 
-パスACLとは独立に、組織そのものを構成する操作——リポジトリ削除、メンバーのロール変更、アクセス制御グラフの一括Apply、メンバー招待の作成/一覧/取り消し——は `is_owner_or_admin(user)` でOwner/Adminロールのみに制限される。「どのファイルを触れるか」(ACL)と「組織構成を変更できるか」(RBAC)は目的の異なる別レイヤーの認可であり、意図的に分離されている。
+パスACLとは独立に、組織そのものを構成する操作——リポジトリ削除、メンバーのロール変更、アクセス制御グラフの一括Apply、**権限の toggle**、メンバー招待の作成/一覧/取り消し——は `is_owner_or_admin(user)` でOwner/Adminロールのみに制限される。「どのファイルを触れるか」(ACL)と「組織構成を変更できるか」(RBAC)は目的の異なる別レイヤーの認可であり、意図的に分離されている。
 
 ### 10.3 ネットワークレベルの防御
 
@@ -398,7 +436,20 @@ flowchart TD
 | リクエストボディ上限 | `LOREHUB_MAX_BODY_BYTES`(既定48MiB)、超過時`413` |
 | ログインのレート制限 | 送信元IP単位、バースト8回+60秒に1回補充(`tower_governor`)。メールアドレス単位ではない設計——攻撃者が他人のメールアドレスへの失敗リクエストでアカウントをロックできてしまう問題を避けるため |
 
+| パスワードの保存 | Argon2id(メモリ19MiB・反復2・並列1、ソルトは毎回乱数)。`login` は、書き込みロックを握らず、`spawn_blocking` で検証する(重い計算の間、他の全リクエストを止めないため)。他の3つのハンドラは未対応(TECHNICAL_REFERENCE.md §7) |
+
 詳細な環境変数・デフォルト値はTECHNICAL_REFERENCE.md §2.1/§4.2を参照。
+
+### 10.4 リクエストの判定: 401 と 403
+
+![リクエストが認証、ロール、パスACLの順に判定される流れ](diagrams/authz-flow.svg)
+
+- **401** = 誰か分からない(有効なアクセストークンが無い)。 **403** = 誰かは分かったが許可がない。両者を混ぜると、クライアントが「ログインし直す」べきか「諦める」べきかを判断できない。
+- 403 の拒否は、ロール・パスのどちらも**監査ログに残る**(`denied ...`)。
+
+**見落としていた穴(2026-10 修正)**: `PUT /api/access-control/entries`(権限グラフの適用)は管理者限定だったが、同じ表を1件ずつ書き換える `POST /api/access-control/entries/toggle` にはロール確認が無く、認証さえ通れば一般メンバーが自分の権限を付け替えられた。エンドポイントごとに「どのガードを通るか」を機械的に洗い出して発見し(TECHNICAL_REFERENCE.md §4.3)、失敗するテストで再現してから直した。教訓は「同じデータを変える入口は、すべて同じ強さで守る」。
+
+**未決の仕様(意図かどうかを決める必要がある)**: リポジトリ設定の更新(`PATCH /api/repositories/{slug}`)は一般メンバーでも実行でき、公開範囲(private→public)も変えられる。ツリー・コミット一覧・コミット詳細は、パスACLで読めないファイルの名前も返す。
 
 ## 11. デプロイアーキテクチャ
 
@@ -425,18 +476,31 @@ graph LR
     WebV -- "rewrites()でサーバーサイド転送<br/>API_INTERNAL_URL" --> ApiV
 ```
 
+![同じホスト名の配置と、別ドメインの配置で、Cookie が保存される場所の違い](diagrams/deploy-cross-domain.svg)
+
 **ローカル/Compose**: ブラウザは`lorehub-web`/`lorehub-api`どちらも同一ホスト名(`localhost`、ポート違いのみ)経由でアクセスするため、`lorehub-api`が発行するセッションCookieは問題なく機能する。永続データは名前付きボリューム1つに`lorehub.db`(SQLite)と`blobs/`(コンテンツアドレスファイル実体)の両方が入る——バックアップは両方が対象(DEPLOYMENT.mdのバックアップ節参照)。
 
 **クロスドメイン配置(実デプロイで発見)**: `lorehub-web`をVercelに、`lorehub-api`を別ドメイン(この検証ではCloudflare Quick Tunnel——アカウント作成不要で無料、再起動のたびにランダムな`*.trycloudflare.com`URLになる制約はこのプロトタイプ段階では許容)に置くと、APIが発行するセッションCookieはAPI自身のドメインにしか保存されず、フロントエンドのドメインへのリクエストには一切送られない——CORSやSameSiteの設定では解決できない、Cookieがそもそもフロントエンドのドメイン下に存在しないため。解決策は「ブラウザにバックエンドの実ドメインを一切見せない」こと: `next.config.ts`の`rewrites()`が`/api/*`をサーバーサイドで`API_INTERNAL_URL`へ転送し、ブラウザが見る`Set-Cookie`は常に`lorehub-web`自身のオリジンのものになる。`NEXT_PUBLIC_USE_API_PROXY=true`がブラウザ側の相対パス切り替えを明示的に指示する(当初`NEXT_PUBLIC_API_URL`を空文字にする方式だったが、ホスティングダッシュボードによっては空文字を確実に保存できず実デプロイで問題が起きたため置き換えた)。**注意**: `rewrites()`はビルド時に評価されるため、`API_INTERNAL_URL`は`npm run build`実行時点で設定済みである必要がある。
+
+**コンテナの隔離**: `docker-compose.yml` の両サービスに `cap_drop: [ALL]` と `no-new-privileges` を設定した。両者とも非rootユーザーで1024超のポートを使い、書き込み先は名前付きボリュームのみなので、Linux capability も権限昇格も要らない(`read_only` ルートは Next.js の `.next/cache` への書き込みがあり得るため、動作確認できるまで入れていない)。
 
 **観測性**: `GET /metrics`(Prometheusテキスト形式、method/route/statusごとのリクエスト数+レイテンシヒストグラム)と`GET /api/health`(Dockerの`HEALTHCHECK`が使用する軽量な生存確認、DBアクセスなし)を追加。`tower_http::TraceLayer`は元々配線されていたが実際にはログを一切出力していなかった(デフォルトDEBUGレベルで出力され、デフォルトのINFOフィルタに黙って捨てられていた)というバグをINFOへの引き上げで修正、`LOREHUB_LOG_FORMAT=json`で構造化ログにも対応。デプロイ手順の全体はDEPLOYMENT.mdを参照(本ドキュメントでは重複させない)。
 
 ## 12. 現在の状態(このドキュメント作成時点)
 
 - ✅ LoreHub Web: 8画面すべて実装、認証・永続化・リポジトリ設定(rename/削除)・**実チャンクストリーミング(HTTP Range)**・**アカウントライフサイクル(パスワード変更/招待/忘れた/リセット)** まで完了、lint/build/test検証済み
-- ✅ lorehub-api: 全エンドポイント認証必須化、**パスACL実強制+RBAC**、**セキュアCookie/CORS/ボディ上限/ログインレート制限**、リポジトリのCRUD完備、**実コンテンツアドレス方式VCS(SHA-256・重複排除・分岐するブランチ・実diff)完備**(§5・§10)、access-control Apply対応、アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証、**HTTP Range配信**、**`/api/health`+`/metrics`(Prometheus)**、**統合テスト118件**
+- ✅ lorehub-api: 全エンドポイント認証必須化、**パスACL実強制+RBAC**、**セキュアCookie/CORS/ボディ上限/ログインレート制限**、リポジトリのCRUD完備、**実コンテンツアドレス方式VCS(SHA-256・重複排除・分岐するブランチ・実diff)完備**(§5・§10)、access-control Apply対応、アクセストークン(30分)+リフレッシュトークン(7日、ローテーション付き)のデュアルトークン認証、**HTTP Range配信**、**`/api/health`+`/metrics`(Prometheus)**、**統合テスト123件**
 - ✅ LoreForge Client: 閲覧+ロック操作に加え、Fork並みの実操作(コミット/ブランチ/ステージング)、バイナリDiffビューア(画像スライダー/3Dトグル)、**テキスト/音声プレビュー**、**画像/テキスト/音声の実アセットアップロード→自動ステージング**、Sparse Workspace Manager、**セッション自動延長(25分ごとのプロアクティブrefresh)**、**Qt Test**、**Windowsインストーラー(NSIS/CPack)**まで完備
 - ✅ LoreForge Server Admin: 実プロセスとしてのLore Server制御(起動/停止/PID/メモリ監視)、権限グラフの実サーバーへのApply、ノードエディタでのディレクトリ/ロールの動的追加・削除、タブ視認性修正、MinIOのDocker制御(実機検証済み)、**セッション自動延長**、**Qt Test**、**Windowsインストーラー(NSIS/CPack)**まで完備
-- ✅ lorehub-web: SSR経路(`proxy.ts`)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応、**Vitestによる自動テスト22件**、**クロスドメイン配置向けAPIプロキシ(`NEXT_PUBLIC_USE_API_PROXY`)**
+- ✅ lorehub-web: SSR経路(`proxy.ts`)とCSR経路の両方でアクセストークン失効時の透過的リフレッシュに対応、**Vitestによる自動テスト44件**、**クロスドメイン配置向けAPIプロキシ(`NEXT_PUBLIC_USE_API_PROXY`)**
 - ✅ デプロイ: `docker-compose.yml`(Rust+Next.jsの2サービス)、GitHub Actions CI、Vercel+Cloudflare Quick Tunnelでの実デプロイ経験(クロスドメインCookie問題を含め修正済み)
+- ✅ UI・基盤(Phase 12): 3列のリポジトリ画面、表示の決めごと(§7.1)、`tokens.json` からの Web/Qt 生成(Qt 両アプリのビルドとテストを確認済み)、書き込み失敗の可視化、`tools/diagrams`(図のコード化、`node:test` 12件)、学習資料 `docs/learning/`
+- ⏳ 未決: リポジトリ設定の更新権限と、ツリー・コミット一覧のパスACL絞り込み(§10.4)
 - ⏳ 既知の制約: `access_entries`のリポジトリスコープ化(現状は組織全体のフラットなマップ)、コードサイニング証明書(デスクトップインストーラーは未署名)、Clientでの3Dモデルアセットアップロード(実ジオメトリローダーが存在しないため意図的に対象外)
+
+## 13. 保守・拡張のために
+
+- 仕組みを基礎から学ぶ: [`docs/learning/`](learning/00-start-here.md)(HTTP・Rust・SQL からアルゴリズム、スクリプト、拡張の手順まで)
+- 図を直す: `tools/diagrams/specs/*.mjs` を編集して `node tools/diagrams/build.mjs`(単体 SVG と `lore-ecosystem-docs.html` を同時に更新)
+- 色や角丸を変える: `design-tokens/tokens.json` を編集して `node tools/gen-tokens.mjs`
+- 迷ったら、手順つきの [拡張レシピ集](learning/13-extend-recipes.md)
