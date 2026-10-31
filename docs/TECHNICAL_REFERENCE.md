@@ -11,6 +11,12 @@ LoreDesktopAndWebSystem/
 ├── LOREHUB_UI_SPEC.md         # LoreHub Web の画面設計
 ├── QUALITY_STANDARDS.md       # コーディング/QA基準
 ├── docs/                      # 本ドキュメント一式(DEPLOYMENT.md/DESKTOP_PACKAGING.mdもここ)
+│   ├── diagrams/                # 生成された図(SVG)。手で編集しない
+│   └── learning/                # 学習資料(基礎から拡張まで、00〜13章)
+├── design-tokens/              # デザイン値の定義元(tokens.json)。ここだけを編集する
+├── tools/
+│   ├── gen-tokens.mjs            # tokens.json → Web CSS と両アプリの Theme.qml を生成(--check で差分検知)
+│   └── diagrams/                  # 図のコード(specs/*.mjs → SVG)。build.mjs / render.mjs / node:test
 ├── docker-compose.yml          # lorehub-api + lorehub-web の2サービス構成
 ├── .github/workflows/ci.yml     # cargo test/clippy/fmt + npm build/lint/test
 ├── lorehub-api/                # Rust (Axum) バックエンド
@@ -38,8 +44,10 @@ LoreDesktopAndWebSystem/
 │   └── src/
 │       ├── app/(app)/              # 認証必須ルートグループ
 │       ├── app/login/, accept-invite/, forgot-password/, reset-password/  # 公開ルート
-│       ├── components/                # UIコンポーネント群
-│       └── lib/api.ts, auth-server.ts # APIクライアント/Cookie転送
+│       ├── app/not-found.tsx          # 404(アスキーの木)
+│       ├── app/tokens.generated.css   # 生成物(design-tokens から)。手で編集しない
+│       ├── components/                # UIコンポーネント群(§8 に一覧)
+│       └── lib/                        # api.ts(ApiError)/auth-server.ts/format.ts/change-symbols.ts/api-errors.ts/ascii-tree.ts ほか
 ├── loreforge-client/              # Qt6/QML デスクトップクライアント
 │   ├── qml/                         # 画面・コンポーネント
 │   ├── src/                          # C++コントローラ/モデル
@@ -65,7 +73,7 @@ Lint/検証:
 ```bash
 cargo fmt
 cargo clippy
-cargo test    # 統合テスト118件。各テストが独立した sqlite://:memory: を使うため実DBには触れない
+cargo test    # 統合テスト123件。各テストが独立した sqlite://:memory: を使うため実DBには触れない
 ```
 
 #### 環境変数(セキュリティ関連、公開デプロイ向け)
@@ -96,7 +104,7 @@ npm install
 npm run dev      # http://localhost:3000 (Turbopack)
 npm run lint      # eslint
 npm run build      # 本番ビルド + 型チェック
-npm run test       # Vitest。unit test 22件(node環境、jsdom不要)
+npm run test       # Vitest。unit test 44件(node環境、jsdom不要)
 ```
 
 環境変数 `NEXT_PUBLIC_API_URL` 未設定時は `http://localhost:4000` にフォールバック(`src/lib/api.ts`)。
@@ -145,7 +153,7 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | GET | `/api/repositories/{slug}` | リポジトリ詳細 |
 | PATCH | `/api/repositories/{slug}` | rename/description/visibility更新 |
 | DELETE | `/api/repositories/{slug}` | リポジトリ削除(関連PRも削除) † |
-| GET | `/api/repositories/{slug}/tree` | ファイルツリー |
+| GET | `/api/repositories/{slug}/tree` | ファイルツリー(各ファイルに `sizeBytes`、種類別の容量集計に使う) |
 | GET | `/api/repositories/{slug}/diff/{*path}?from=&to=` | 2コミット間の行レベルdiff(テキストのみ、§3.6) |
 | POST | `/api/repositories/{slug}/upload` | 画像/テキスト/音声ファイルの実バイトをアップロード(リポジトリ単位で分離、種別はpathの拡張子から推定) |
 | POST | `/api/repositories/{slug}/tree/lock` | ファイルロック切替 |
@@ -153,7 +161,7 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | GET | `/api/repositories/{slug}/image/{*path}` | 画像プレビュー(HTTP Range対応) |
 | GET | `/api/repositories/{slug}/image-before/{*path}` | 画像Before(diff用) |
 | GET | `/api/repositories/{slug}/audio/{*path}` | 音声プレビュー(WAV、HTTP Range対応) |
-| GET | `/api/repositories/{slug}/commits` | コミット履歴(ブランチ情報込み) |
+| GET | `/api/repositories/{slug}/commits` | コミット履歴(ブランチ情報込み。各コミットに `createdAt`=Unix秒) |
 | POST | `/api/repositories/{slug}/commits` | ステージ済み変更からコミット作成 |
 | GET | `/api/repositories/{slug}/commits/{hash}` | コミット詳細 |
 | GET | `/api/repositories/{slug}/branches` | ブランチ一覧 |
@@ -166,7 +174,7 @@ Git Bash から呼ぶ場合は `MSYS_NO_PATHCONV=1` を付与しないと `cmd.e
 | GET | `/api/pulls/{id}` | PR詳細+差分 |
 | POST | `/api/pulls/{id}/comments` | PRへのコメント追加 |
 | GET | `/api/access-control/entries` | パス別アクセス権限一覧 |
-| POST | `/api/access-control/entries/toggle` | 権限トグル |
+| POST | `/api/access-control/entries/toggle` | 権限トグル †(2026-10 から。以前はロール確認が無かった、§4.3) |
 | PUT | `/api/access-control/entries` | 権限グラフの一括Apply(パスごとにマージ) † |
 | GET | `/api/org/members` | 組織メンバー一覧 |
 | PATCH | `/api/org/members/{email}` | メンバーのロール変更 † |
@@ -267,6 +275,25 @@ VCS再設計フェーズ5で追加。既存の `PullRequest.changed_files`/`PrDi
 - **ボディサイズ上限**: `LOREHUB_MAX_BODY_BYTES`(既定48MiB)、`tower_http::limit::RequestBodyLimitLayer`(§2.1)。
 - **ログインのレート制限**: 送信元IP単位、バースト8回+60秒に1回補充(`tower_governor`、§2.1)。`axum::serve`を`into_make_service_with_connect_info::<SocketAddr>()`経由で起動しないと送信元IPが見えず機能しない。
 
+### 4.3 エンドポイントごとの認可ガード(全一覧)
+
+「どのエンドポイントがどのガードを通るか」を、`handlers.rs` の各ハンドラを機械的に走査して作った表。穴(同じデータを変える入口で強さが違う)は、この表を作ると見つかる。
+
+| ハンドラ | ガード | 備考 |
+|---|---|---|
+| `get_file_content` / `get_image` / `get_image_before` / `get_audio` / `get_diff` | パスACL **Read** | |
+| `upload_file` / `stage_change` | パスACL **Write** | ステージ時に確認するので、`create_commit` は再確認しない |
+| `toggle_lock` | パスACL **Lock** | |
+| `delete_repository` / `update_member_role` / `apply_access_entries` / `toggle_permission` | **Owner/Admin** | `toggle_permission` は 2026-10 に追加(それまで無防備) |
+| `create_invite` / `list_invites` / `revoke_invite` | **Owner/Admin** | |
+| `change_password` | 本人のみ(現在のパスワードの確認) | |
+| `create_repository` / `update_repository` | 認証のみ | ⚠ 未決: `update_repository` は公開範囲も変えられる |
+| `get_tree` / `list_commits` / `get_commit` | 認証のみ | ⚠ 未決: パスACLで読めないファイルの名前も返る |
+| `list_branches` / `create_branch` / `checkout_branch` / `get_current_branch` / `get_pending_changes` / `create_commit` | 認証のみ | 注意: 「現在のブランチ」はリポジトリごとにサーバー側へ1つ(`current_branch`)なので、誰かが checkout すると全員の `GET /tree` が変わる |
+| `list_pull_requests` / `get_pull_request` / `add_comment` / `get_access_entries` / `list_members` / `get_storage` / `get_audit_log` | 認証のみ | |
+
+**401 と 403**: 有効なアクセストークンが無ければ 401(誰か分からない)。ロール・パスACLで拒否されたら 403(ロール/パスのどちらも監査ログに `denied ...` が残る)。401 は監査ログに残さない。
+
 ## 5. 永続化: kv_store ブロブ方式 + 正規化VCSテーブルの併存
 
 2つの永続化方式が併存する(詳細は `lorehub-api/src/db.rs` のモジュールコメントを一次情報源とする)。
@@ -300,4 +327,48 @@ VCS再設計フェーズ5で追加。既存の `PullRequest.changed_files`/`PrDi
 - `kv_store` 方式は非VCSデータについては引き続き将来的にリレーショナルスキーマへ移行する余地を残す(現状はデータ量的に不要と判断)。VCSデータ(リポジトリ・コミット・ブランチ・ツリー・ファイル実体)は本ドキュメント執筆時点で既に正規化SQLテーブルへ移行済み(§5参照)。
 - LoreForge Client/Server AdminにもQt Testによる単体テストを導入済み(`loreforge-client/tests/tst_repositorytreemodel.cpp`、`loreforge-server-admin/tests/tst_permissionconfigcontroller.cpp`)。GUI操作の自動化(`SendInput`等)はこのサンドボックスでは信頼できないため対象外とし、`RepositoryTreeModel`のツリー構築/Sparse Workspace Managerのinclude/exclude/cascade-exclude/ステージ管理、`PermissionConfigController`のJSON永続化ラウンドトリップなど、GUI非依存の純粋なモデル/コントローラロジックのみを対象にしている。各`CMakeLists.txt`に`enable_testing()`と`LoreForgeClientTests`/`LoreForgeServerAdminTests`ターゲットを追加し、`main.cpp`を除いた対象`.cpp`をテスト実行ファイルへ直接コンパイル(`QTEST_GUILESS_MAIN`が独自の`main()`を提供)。`ctest`(各`build/`ディレクトリ内)で実行できる。
 - `access_entries`(§4.1)はリポジトリスコープを持たない組織全体のフラットなマップのまま——両クライアントとも今のところリポジトリごとのACLという概念自体を持っていないための意図的な現状維持であり、将来リポジトリスコープ化する場合は`GET`/`PUT /api/access-control/entries`へのルート変更(`{slug}`セグメント追加)とクライアント側の対応改修が必要になる。
+- **未決(仕様の確認が必要)**: ①リポジトリ設定の更新(`PATCH`)は一般メンバーも実行でき公開範囲を変えられる、②ツリー・コミット一覧・コミット詳細はパスACLで絞り込まない、③監査ログと権限一覧は全メンバーが読める、④「現在のブランチ」がリポジトリ単位でサーバーに1つ(§4.3)。いずれも現状の挙動を表に記録しただけで、変更していない。
+- **既知の課題(レビューで見つけ、まだ直していない)**:
+  - `change_password`・`accept_invite`・`reset_password` は、全体で共有する書き込みロックを握ったまま Argon2 のハッシュを計算している(`login` は2026-10に、ロックの外で検証する形に直した)。トークンの検証と更新が絡むため、競合を検討して直す必要がある。
+  - `login` は、存在しないメールでは検証せず即 401 を返す。応答時間の差から登録済みメールを推測できる余地がある(ダミーのハッシュを検証すれば塞げる)。
+  - デモアカウント4つは、同じパスワードのハッシュ文字列を共有している(シードが1回だけ計算する)。
+  - ファイルの種類(拡張子)の表が、API(`vcs_store.rs` の `file_kind_for_path`)と Web(`icons.tsx` の `inferFileKind`)に二重にあり、すでにずれている(`svg`/`tga`/`exr`/`blend`/`usd`/`flac`/`txt`/`ts` など)。ずれの影響は、コミット詳細のアイコンだけ。根本の直し方は、API が `fileKind` を返すこと([学習資料 13 のレシピ D](learning/13-extend-recipes.md))。
+  - `get_current_branch` は、行が無いとき `"main"` 固定(リポジトリの `is_default` ブランチを見ていない)。
+  - DB エラーを `expect` で受けている箇所が多く、失敗するとタスクが落ちる(`Result` で返して 500 にするのが望ましい)。
 - デプロイ手順(Docker Compose・環境変数・TLS/リバースプロキシ・バックアップ)は `docs/DEPLOYMENT.md`、デスクトップインストーラーのビルド手順は `docs/DESKTOP_PACKAGING.md` を参照(本ドキュメントでは重複させない)。
+
+## 8. UI 部品・ツールのリファレンス
+
+### 8.1 共通部品(`lorehub-web/src/components/`)
+
+| 部品 | 役割 | 使い方・約束 |
+|---|---|---|
+| `Toast`(`ToastProvider` / `useToast`) | 短い確認・失敗の通知 | `(app)/layout.tsx` が包む。`showToast(文)` で2秒表示。`role="status"`(読み上げ対応)、z-index 1100(モーダルより上) |
+| `CopyableHash` | コミットハッシュの表示 | 先頭7桁・等幅。クリックで**全体**をコピーし「Copied」。コピー失敗時は手動コピーを促す |
+| `RelativeTime` | 日時の表示 | 「3h ago」+ホバーと `sr-only` に UTC の絶対時刻。`unixSeconds` が無ければ相対ラベルだけ |
+| `ChangeTypeBadge` | 追加/変更/削除のバッジ | 色+記号(`lib/change-symbols.ts`)。`TextDiffViewer` も同じ記号を使う |
+| `Breadcrumb` | 現在地 | 最後の項目が現在のページ(`aria-current`)。区切りは `›`(読み上げない) |
+| `RepositorySummary` | 右サマリ | コミット/ブランチ/PR の数と、種類別容量の積み上げバー。数値はすべて API の値から計算 |
+| `EmptyRepositoryGuide` / `AsciiTree` | 空リポジトリの案内 | 動かない絵(固定シードの再帰で生成)。装飾なので `aria-label` に1文だけ |
+
+### 8.2 共通ロジック(`lorehub-web/src/lib/`)
+
+| ファイル | 内容 |
+|---|---|
+| `format.ts` | `shortHash`(7桁)、`formatAbsoluteTime`(UTC・分まで)、`formatBytes`、`summarizeStorage`(種類別の積み上げ。合計=各バケットの和) |
+| `change-symbols.ts` | `CHANGE_SYMBOL`(`+` `~` `−`)と `DIFF_LINE_SYMBOL` |
+| `api.ts` | `ApiError`(`status` を持つ)。書き込みの失敗はこれを投げる |
+| `api-errors.ts` | `mutationErrorMessage(error, forbiddenMessage)`: 403 なら呼び出し側の文言、それ以外は「Something went wrong. Try again.」 |
+| `ascii-tree.ts` | 固定シードの再帰で木を描く(`buildAsciiTree`、`strokeChar`) |
+
+### 8.3 ツール
+
+| コマンド | 内容 |
+|---|---|
+| `node tools/gen-tokens.mjs` | `design-tokens/tokens.json` から Web CSS と両 `Theme.qml` を生成。`--check` は食い違いがあれば終了コード1(CI で実行) |
+| `node tools/diagrams/build.mjs` | `tools/diagrams/specs/*.mjs` から `docs/diagrams/*.svg` を生成し、`docs/lore-ecosystem-docs.html` の `<!-- diagram:名前 -->` の間へ埋め込む。`--check` で差分検知 |
+| `node --test tools/diagrams/render.test.mjs` | 図のレンダラーのテスト(12件) |
+
+### 8.4 テスト件数(この資料の作成時点)
+
+`lorehub-api` 123件(`cargo test`)、`lorehub-web` 44件(`npm test`、Vitest)、図 12件(`node:test`)、Qt Test 各1スイート(`ctest`)。
