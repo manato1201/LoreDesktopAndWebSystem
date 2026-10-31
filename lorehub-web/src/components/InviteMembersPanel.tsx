@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { createInvite, revokeInvite } from "@/lib/api";
+import { mutationErrorMessage } from "@/lib/api-errors";
 import type { MemberRole, PendingInvite } from "@/lib/types";
+import { useToast } from "./Toast";
 
 const ROLES: MemberRole[] = ["owner", "admin", "member"];
 
@@ -36,6 +38,7 @@ export function InviteMembersPanel({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -76,8 +79,19 @@ export function InviteMembersPanel({
   };
 
   const handleRevoke = async (revokeEmail: string) => {
-    await revokeInvite(revokeEmail);
-    setInvites((prev) => prev.filter((invite) => invite.email !== revokeEmail));
+    try {
+      await revokeInvite(revokeEmail);
+      setInvites((prev) =>
+        prev.filter((invite) => invite.email !== revokeEmail),
+      );
+    } catch (error) {
+      showToast(
+        mutationErrorMessage(
+          error,
+          "Only an Owner or Admin can revoke invites.",
+        ),
+      );
+    }
   };
 
   return (

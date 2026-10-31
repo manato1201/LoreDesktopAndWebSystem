@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWithRefresh } from "./api";
+import { ApiError, fetchWithRefresh, togglePermission } from "./api";
 
 function jsonResponse(status: number, body: unknown = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -118,5 +118,33 @@ describe("fetchWithRefresh", () => {
     expect(resA.status).toBe(200);
     expect(resB.status).toBe(200);
     expect(refreshCalls).toBe(1);
+  });
+});
+
+/**
+ * A 403 means "signed in, but not allowed". Callers need to tell that apart
+ * from a failure, so the status travels with the error.
+ */
+describe("ApiError", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("carries the HTTP status and is still an Error", () => {
+    const error = new ApiError("nope", 403);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.status).toBe(403);
+    expect(error.name).toBe("ApiError");
+  });
+
+  it("is what a write rejected with 403 throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(403)));
+
+    const failure = await togglePermission("Assets", "QA Contractors", "lock").catch(
+      (e: unknown) => e,
+    );
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(403);
   });
 });

@@ -448,3 +448,110 @@ async fn access_entries_apply_identically_across_repositories_by_current_design(
     assert_eq!(on_seeded.status(), StatusCode::FORBIDDEN);
     assert_eq!(on_other.status(), StatusCode::FORBIDDEN);
 }
+
+/// `PUT /api/access-control/entries` (apply a whole graph) already required
+/// Owner/Admin, but `POST .../entries/toggle` — which edits the very same
+/// table one permission at a time — had no role check at all, so any signed-in
+/// Member could grant themselves (or anyone) any permission. Both must be
+/// held to the same bar.
+#[tokio::test]
+async fn toggle_permission_requires_admin_or_owner() {
+    let app = test_app().await;
+    // The seed data gives the "QA Contractors" team read-only access to
+    // "Assets"; toggling `lock` on it adds a permission it does not have.
+    let body = serde_json::json!({
+        "path": "Assets",
+        "principal": "QA Contractors",
+        "level": "lock",
+    });
+
+    let permissions_of = |entries: &serde_json::Value| -> Vec<String> {
+        entries["Assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["principal"] == "QA Contractors")
+            .unwrap()["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let admin_cookie = login_cookie(&app, ADMIN_EMAIL).await;
+    let before = body_json(
+        send(
+            &app,
+            plain_request("GET", "/api/access-control/entries", Some(&admin_cookie)),
+        )
+        .await,
+    )
+    .await;
+    let before_permissions = permissions_of(&before);
+
+    // A Member is refused...
+    let diego_cookie = login_cookie(&app, QA_CONTRACTOR_EMAIL).await;
+    let denied = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/access-control/entries/toggle",
+            Some(&diego_cookie),
+            body.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // ... and nothing changed.
+    let after_denied = body_json(
+        send(
+            &app,
+            plain_request("GET", "/api/access-control/entries", Some(&admin_cookie)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(permissions_of(&after_denied), before_permissions);
+
+    // The refusal is audited like every other denial.
+    let log = body_json(
+        send(
+            &app,
+            plain_request("GET", "/api/org/audit-log", Some(&admin_cookie)),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        log.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["actor"] == "Diego Fernandez"
+                && e["action"].as_str().unwrap().starts_with("denied")),
+        "a denied toggle should leave an audit entry: {log:#}"
+    );
+
+    // An Admin still can.
+    let allowed = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/access-control/entries/toggle",
+            Some(&admin_cookie),
+            body,
+        ),
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let after_allowed = body_json(
+        send(
+            &app,
+            plain_request("GET", "/api/access-control/entries", Some(&admin_cookie)),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(permissions_of(&after_allowed), before_permissions);
+}

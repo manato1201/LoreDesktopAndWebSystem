@@ -61,12 +61,15 @@ export function PermissionMatrix({
                       onClick={() => onTogglePermission(entry.principal, level)}
                       aria-pressed={granted}
                       aria-label={`${LEVEL_LABEL[level]} for ${entry.principal} on ${path}`}
-                      className={`size-6 rounded-standard transition-colors ${
+                      className={`size-6 rounded-standard text-xs font-bold leading-none transition-colors ${
                         granted
-                          ? "bg-accent"
+                          ? "bg-accent text-bg-base"
                           : "bg-surface-interactive hover:bg-surface-elevated"
                       }`}
-                    />
+                    >
+                      {/* A check mark as well as the fill: granted must not rely on colour alone. */}
+                      {granted && <span aria-hidden="true">✓</span>}
+                    </button>
                   </td>
                 );
               })}

@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { toggleLock } from "@/lib/api";
+import { mutationErrorMessage } from "@/lib/api-errors";
 import type { TreeNode } from "@/lib/types";
 import { findNode } from "@/lib/tree-utils";
 import { Breadcrumb } from "./Breadcrumb";
@@ -10,6 +11,7 @@ import { FileDetail } from "./FileDetail";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ReadmePreview } from "./ReadmePreview";
 import { RepositoryIcon } from "./icons";
+import { useToast } from "./Toast";
 import { TreeView } from "./TreeView";
 
 /**
@@ -29,6 +31,7 @@ export function RepositoryExplorer({
 }) {
   const [tree, setTree] = useState(initialTree);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const selectedNode = selectedPath ? findNode(tree, selectedPath) : undefined;
   const selectedFile =
@@ -41,12 +44,21 @@ export function RepositoryExplorer({
 
   const handleToggleLock = async () => {
     if (!selectedFile) return;
-    const updated = await toggleLock(
-      repoSlug,
-      selectedFile.path,
-      !selectedFile.lockedBy,
-    );
-    if (updated) setTree(updated);
+    try {
+      const updated = await toggleLock(
+        repoSlug,
+        selectedFile.path,
+        !selectedFile.lockedBy,
+      );
+      if (updated) setTree(updated);
+    } catch (error) {
+      showToast(
+        mutationErrorMessage(
+          error,
+          "You do not have lock permission on this path.",
+        ),
+      );
+    }
   };
 
   return (

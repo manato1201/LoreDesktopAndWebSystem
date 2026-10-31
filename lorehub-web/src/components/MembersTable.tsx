@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { updateMemberRole } from "@/lib/api";
+import { mutationErrorMessage } from "@/lib/api-errors";
 import type { MemberRole, OrgMember } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
+import { useToast } from "./Toast";
 
 const ROLES: MemberRole[] = ["owner", "admin", "member"];
 
@@ -13,12 +15,19 @@ export function MembersTable({
   initialMembers: OrgMember[];
 }) {
   const [members, setMembers] = useState(initialMembers);
+  const { showToast } = useToast();
 
   const setRole = async (email: string, role: MemberRole) => {
-    const updated = await updateMemberRole(email, role);
-    if (updated) {
-      setMembers((prev) =>
-        prev.map((member) => (member.email === email ? updated : member)),
+    try {
+      const updated = await updateMemberRole(email, role);
+      if (updated) {
+        setMembers((prev) =>
+          prev.map((member) => (member.email === email ? updated : member)),
+        );
+      }
+    } catch (error) {
+      showToast(
+        mutationErrorMessage(error, "Only an Owner or Admin can change roles."),
       );
     }
   };

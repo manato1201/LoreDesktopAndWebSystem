@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { addComment } from "@/lib/api";
+import { mutationErrorMessage } from "@/lib/api-errors";
 import type { PRComment } from "@/lib/types";
 import { AuthorAvatar } from "./AuthorAvatar";
+import { useToast } from "./Toast";
 
 export function CommentThread({
   pullRequestId,
@@ -15,6 +17,7 @@ export function CommentThread({
   const [comments, setComments] = useState(initialComments);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const { showToast } = useToast();
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -22,12 +25,20 @@ export function CommentThread({
     if (!body) return;
 
     setSubmitting(true);
-    const updated = await addComment(pullRequestId, body);
-    if (updated) {
-      setComments(updated.comments);
-      setDraft("");
+    try {
+      const updated = await addComment(pullRequestId, body);
+      if (updated) {
+        setComments(updated.comments);
+        setDraft("");
+      }
+    } catch (error) {
+      showToast(
+        mutationErrorMessage(error, "You do not have permission to comment."),
+      );
+    } finally {
+      // Always re-enable the form, or one failed request leaves it stuck.
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
   return (

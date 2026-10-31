@@ -1,3 +1,4 @@
+import { CHANGE_SYMBOL } from "@/lib/change-symbols";
 import type { FileChangeType } from "@/lib/types";
 
 const STYLES: Record<FileChangeType, string> = {
@@ -10,17 +11,6 @@ const LABEL: Record<FileChangeType, string> = {
   added: "Added",
   modified: "Modified",
   deleted: "Deleted",
-};
-
-/**
- * Colour is never the only signal: every change type also carries a symbol
- * (added +, deleted −, modified ~), so the three stay distinguishable
- * without colour.
- */
-export const CHANGE_SYMBOL: Record<FileChangeType, string> = {
-  added: "+",
-  modified: "~",
-  deleted: "−",
 };
 
 export function ChangeTypeBadge({ type }: { type: FileChangeType }) {

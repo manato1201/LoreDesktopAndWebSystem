@@ -86,6 +86,21 @@ function refreshAccessToken(): Promise<boolean> {
 }
 
 /**
+ * A request the server answered with an error status. Carries the status so
+ * callers can tell "you are not allowed" (403) from "something broke" (5xx)
+ * without parsing the message text.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/**
  * Runs `doFetch` and, on a 401 from a browser-driven call (no `cookie` —
  * that means Server Component/SSR, where this in-memory retry can't help
  * because there's no cookie jar and no way to relay a fresh `Set-Cookie`
@@ -126,7 +141,7 @@ async function apiGet<T>(path: string, cookie?: string): Promise<T> {
     cookie,
   );
   if (!res.ok) {
-    throw new Error(`GET ${path} failed: ${res.status}`);
+    throw new ApiError(`GET ${path} failed: ${res.status}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -146,7 +161,7 @@ async function apiGetOrNull<T>(
   );
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
-    throw new Error(`GET ${path} failed: ${res.status}`);
+    throw new ApiError(`GET ${path} failed: ${res.status}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -167,7 +182,7 @@ async function apiSend<T>(
   );
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
-    throw new Error(`${method} ${path} failed: ${res.status}`);
+    throw new ApiError(`${method} ${path} failed: ${res.status}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -182,7 +197,7 @@ async function apiDelete(path: string): Promise<boolean> {
   );
   if (res.status === 404) return false;
   if (!res.ok) {
-    throw new Error(`DELETE ${path} failed: ${res.status}`);
+    throw new ApiError(`DELETE ${path} failed: ${res.status}`, res.status);
   }
   return true;
 }
@@ -258,7 +273,7 @@ export async function getFileContent(
   );
   if (res.status === 404 || res.status === 401) return null;
   if (!res.ok) {
-    throw new Error(`GET ${apiPath} failed: ${res.status}`);
+    throw new ApiError(`GET ${apiPath} failed: ${res.status}`, res.status);
   }
   return res.text();
 }
