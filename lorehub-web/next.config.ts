@@ -29,9 +29,11 @@ const nextConfig: NextConfig = {
   // The fix is to make the browser never talk to the backend's real domain
   // directly: every browser-side call in src/lib/api.ts goes to a relative
   // `/api/...` path (see that file's `API_BASE`, which resolves to `""`
-  // client-side whenever `NEXT_PUBLIC_API_URL` is left empty), landing on
+  // client-side whenever `NEXT_PUBLIC_USE_API_PROXY=true`), landing on
   // this same origin, and this rewrite silently forwards it server-side to
-  // the real backend named by `API_INTERNAL_URL`. The browser only ever
+  // the real backend named by `API_INTERNAL_URL`. Note that `rewrites()` is
+  // evaluated at BUILD time, so `API_INTERNAL_URL` must be set when
+  // `npm run build` runs, not only when the server starts. The browser only
   // sees this origin's own Set-Cookie response, so the cookie is correctly
   // scoped here — solving the cross-domain problem without needing a
   // shared parent domain or switching off cookie-based auth.

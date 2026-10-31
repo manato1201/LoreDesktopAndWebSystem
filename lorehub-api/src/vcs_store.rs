@@ -84,19 +84,21 @@ pub fn file_kind_for_path(path: &str) -> &'static str {
 /// (see [`format_size_delta_label`] for the signed version built on top of
 /// this).
 pub fn format_size_label(bytes: i64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b < KB {
-        format!("{bytes} B")
-    } else if b < MB {
-        format!("{:.1} KB", b / KB)
-    } else if b < GB {
-        format!("{:.1} MB", b / MB)
-    } else {
-        format!("{:.1} GB", b / GB)
+    const UNITS: [&str; 3] = ["KB", "MB", "GB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
+
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    // Round first, then pick the unit: 1_048_575 B is 1023.999 KB, which
+    // prints as "1024.0 KB" if the unit is chosen before rounding. It should
+    // read "1.0 MB". (Gigabytes are the largest unit, as before.)
+    while unit < UNITS.len() - 1 && (value * 10.0).round() / 10.0 >= 1024.0 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
 }
 
 /// The real `sizeDeltaLabel` computation this phase replaces the hardcoded
@@ -1076,4 +1078,35 @@ pub async fn resolve_content_hash_at_commit(
     .await
     .expect("query tree_entries for path at commit")
     .map(|row| row.get("content_hash"))
+}
+
+#[cfg(test)]
+mod size_label_tests {
+    use super::{format_size_delta_label, format_size_label};
+
+    #[test]
+    fn whole_bytes_below_one_kib_and_one_decimal_above() {
+        assert_eq!(format_size_label(0), "0 B");
+        assert_eq!(format_size_label(1023), "1023 B");
+        assert_eq!(format_size_label(1024), "1.0 KB");
+        assert_eq!(format_size_label(1536), "1.5 KB");
+        assert_eq!(format_size_label(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn rounding_up_to_1024_moves_to_the_next_unit() {
+        // 1_048_575 B is 1023.999 KB; rounded to one decimal it would read
+        // "1024.0 KB", which should be "1.0 MB".
+        assert_eq!(format_size_label(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(format_size_label(1024 * 1024 * 1024 - 1), "1.0 GB");
+        // Just below the rounding threshold keeps the smaller unit.
+        assert_eq!(format_size_label(1024 * 1024 - 1024), "1023.0 KB");
+    }
+
+    #[test]
+    fn delta_label_uses_the_same_formatting() {
+        assert_eq!(format_size_delta_label(None, Some(1536)), "+1.5 KB");
+        assert_eq!(format_size_delta_label(Some(1536), None), "-1.5 KB");
+        assert_eq!(format_size_delta_label(Some(10), Some(10)), "±0 B");
+    }
 }
