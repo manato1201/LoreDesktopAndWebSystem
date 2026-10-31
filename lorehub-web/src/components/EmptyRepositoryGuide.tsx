@@ -1,10 +1,10 @@
-import { RepositoryIcon } from "./icons";
+import { AsciiTree } from "./AsciiTree";
 
 /** Shown when a repository has no files yet: say what is happening and what to do next. */
 export function EmptyRepositoryGuide() {
   return (
     <div className="flex min-h-80 flex-col items-center justify-center gap-5 p-6 text-center">
-      <RepositoryIcon className="size-8 text-text-secondary" />
+      <AsciiTree />
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold text-text-primary">
           Waiting for the first commit

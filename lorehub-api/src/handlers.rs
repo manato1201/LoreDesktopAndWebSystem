@@ -1519,6 +1519,12 @@ pub async fn toggle_permission(
     axum::Extension(user): axum::Extension<OrgMember>,
     Json(body): Json<PermissionToggleRequest>,
 ) -> Response {
+    // Same bar as `apply_access_entries`: both edit the same table, so a
+    // Member who could toggle could grant themselves anything.
+    if !is_owner_or_admin(&user) {
+        return deny_role_action(&ctx, &user, "toggle access permission", &body.path).await;
+    }
+
     let mut state = ctx.write().await;
     let Some(entries) = state.access_entries.get_mut(&body.path) else {
         return not_found("no access entries for this path");

@@ -40,25 +40,6 @@ body {
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
 
-/*
- * The 404 fish drifts slowly. transform only (QUALITY_STANDARDS.md §3), and
- * not at all when the OS asks for reduced motion (§4).
- */
-@keyframes lore-swim {
-  from {
-    transform: translateX(-8px);
-  }
-  to {
-    transform: translateX(8px);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .lore-swim {
-    animation: lore-swim 5s ease-in-out infinite alternate;
-  }
-}
-
 /* QUALITY_STANDARDS.md §2 — never remove the focus outline on dark surfaces */
 :focus-visible {
   outline: 2px solid var(--color-accent);

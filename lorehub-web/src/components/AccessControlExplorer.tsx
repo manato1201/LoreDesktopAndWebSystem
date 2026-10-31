@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { togglePermission as togglePermissionApi } from "@/lib/api";
+import { mutationErrorMessage } from "@/lib/api-errors";
 import type { AccessEntry, PermissionLevel } from "@/lib/types";
 import type { PureDirectoryNode } from "@/lib/tree-utils";
 import { DirectoryTree } from "./DirectoryTree";
 import { PermissionMatrix } from "./PermissionMatrix";
+import { useToast } from "./Toast";
 
 export function AccessControlExplorer({
   directories,
@@ -16,14 +18,24 @@ export function AccessControlExplorer({
 }) {
   const [selectedPath, setSelectedPath] = useState(directories[0]?.path ?? "");
   const [entriesByPath, setEntriesByPath] = useState(initialEntries);
+  const { showToast } = useToast();
 
   const handleTogglePermission = async (
     principal: string,
     level: PermissionLevel,
   ) => {
-    const updated = await togglePermissionApi(selectedPath, principal, level);
-    if (updated) {
-      setEntriesByPath((prev) => ({ ...prev, [selectedPath]: updated }));
+    try {
+      const updated = await togglePermissionApi(selectedPath, principal, level);
+      if (updated) {
+        setEntriesByPath((prev) => ({ ...prev, [selectedPath]: updated }));
+      }
+    } catch (error) {
+      showToast(
+        mutationErrorMessage(
+          error,
+          "Only an Owner or Admin can change permissions.",
+        ),
+      );
     }
   };
 
