@@ -27,7 +27,15 @@ export function formatBytes(bytes: number): string {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toFixed(1)} ${UNITS[unit]}`;
+  // Round first, then check the unit: 1_048_575 B is 1023.999 KB, which
+  // rounds to "1024.0 KB" — it should read "1.0 MB".
+  let rounded = Math.round(value * 10) / 10;
+  if (rounded >= 1024 && unit < UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+    rounded = Math.round(value * 10) / 10;
+  }
+  return `${rounded.toFixed(1)} ${UNITS[unit]}`;
 }
 
 export type StorageBucket = "audio" | "model3d" | "image" | "other";

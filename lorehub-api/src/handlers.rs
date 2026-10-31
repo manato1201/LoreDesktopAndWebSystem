@@ -175,23 +175,37 @@ pub struct LoginRequest {
 }
 
 pub async fn login(State(ctx): State<SharedState>, Json(body): Json<LoginRequest>) -> Response {
-    let mut state = ctx.write().await;
-
-    let Some(hash) = state.credentials.get(&body.email).cloned() else {
-        return unauthorized();
+    // Look the account up under a short read lock, then verify the password
+    // with NO lock held. Argon2 is slow on purpose, and this endpoint is
+    // public: holding the global write lock while it runs would let anyone
+    // stall every other request just by logging in repeatedly. The write lock
+    // is taken only to record the new tokens, below.
+    let (hash, user) = {
+        let state = ctx.read().await;
+        let Some(hash) = state.credentials.get(&body.email).cloned() else {
+            return unauthorized();
+        };
+        let Some(user) = state
+            .org_members
+            .iter()
+            .find(|m| m.email == body.email)
+            .cloned()
+        else {
+            return unauthorized();
+        };
+        (hash, user)
     };
-    if !auth::verify_password(&body.password, &hash) {
+
+    // CPU-bound, so run it where it cannot hold up the async worker threads.
+    let password = body.password.clone();
+    let verified = tokio::task::spawn_blocking(move || auth::verify_password(&password, &hash))
+        .await
+        .unwrap_or(false);
+    if !verified {
         return unauthorized();
     }
-    let Some(user) = state
-        .org_members
-        .iter()
-        .find(|m| m.email == body.email)
-        .cloned()
-    else {
-        return unauthorized();
-    };
 
+    let mut state = ctx.write().await;
     let now = auth::current_unix_time();
     let access_token = auth::generate_token();
     let refresh_token = auth::generate_token();

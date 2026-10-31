@@ -30,6 +30,16 @@ describe("formatBytes", () => {
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
+
+  it("moves up a unit when rounding would print 1024.0 of the smaller one", () => {
+    // 1_048_575 B is 1023.999 KB; rounded to one decimal that reads "1024.0 KB".
+    expect(formatBytes(1024 * 1024 - 1)).toBe("1.0 MB");
+    expect(formatBytes(1024 * 1024 * 1024 - 1)).toBe("1.0 GB");
+  });
+
+  it("keeps the unit when the rounded value is still below 1024", () => {
+    expect(formatBytes(1024 * 1024 - 1024)).toBe("1023.0 KB");
+  });
 });
 
 const file = (
