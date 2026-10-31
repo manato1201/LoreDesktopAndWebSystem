@@ -35,8 +35,8 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
-  design-tokens:
-    name: design-tokens
+  generated-files:
+    name: generated files (tokens, diagrams)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +50,16 @@ jobs:
       # tokens.json changed without regenerating.
       - name: tokens are in sync
         run: node tools/gen-tokens.mjs --check
+
+      # docs/diagrams/*.svg and the diagrams embedded in
+      # docs/lore-ecosystem-docs.html are generated from tools/diagrams/specs;
+      # this fails if a spec changed without regenerating (or a generated
+      # file was edited by hand).
+      - name: diagrams are in sync
+        run: node tools/diagrams/build.mjs --check
+
+      - name: diagram renderer tests
+        run: node --test tools/diagrams/render.test.mjs
 
   lorehub-web:
     name: lorehub-web
