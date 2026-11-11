@@ -439,7 +439,31 @@ async fn main() {
         }
         None => {
             tracing::info!("no persisted state found — seeding lorehub.db");
-            let seeded = state::seed();
+            // The seed creates an Owner account. Never give it the well-known
+            // password on a deployment (see `state::choose_demo_password`).
+            let configured = std::env::var("LOREHUB_DEMO_PASSWORD").ok();
+            let (demo_password, source) = state::choose_demo_password(
+                configured.as_deref(),
+                auth::local_dev_mode(),
+                auth::generate_token,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
+            match source {
+                state::DemoPasswordSource::Generated => tracing::warn!(
+                    "generated a one-time password for ALL seeded demo accounts (shown once, change it after signing in, \
+                     or set LOREHUB_DEMO_PASSWORD before the first boot): {demo_password}"
+                ),
+                state::DemoPasswordSource::Configured => {
+                    tracing::info!("seeded demo accounts use LOREHUB_DEMO_PASSWORD")
+                }
+                state::DemoPasswordSource::LocalDefault => tracing::info!(
+                    "local development: seeded demo accounts use the well-known demo password"
+                ),
+            }
+            let seeded = state::seed_with_password(&demo_password);
             db::save_all(&pool, &seeded).await;
             seeded
         }

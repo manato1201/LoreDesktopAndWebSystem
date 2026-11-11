@@ -25,8 +25,21 @@ This builds both images and starts:
 
 A fresh SQLite database (`lorehub.db`) is seeded automatically on first boot
 with the same demo dataset the app ships with — no separate migration step.
-Log in with `aiko.tanaka@nebula.studio` / `lorehub` (or any other seeded
-account) to confirm it's working.
+
+**The demo accounts' password depends on how you run it** (the seed creates an
+Owner account, so a well-known password must never reach a deployment):
+
+- `LOREHUB_DEMO_PASSWORD` set (at least 8 characters) — every seeded account
+  uses it. Set it in `.env` before the first boot.
+- Not set, and `LOREHUB_INSECURE_COOKIES=true` (local plain-`http://`
+  development only) — the well-known `lorehub`.
+- Not set, normal (secure) mode — a random one-time password is generated and
+  printed once in the API log:
+  `docker compose logs lorehub-api | grep "one-time password"`. Change it after
+  signing in. It only applies to a *fresh* database; an existing
+  `lorehub.db` keeps its current passwords.
+
+Log in with `aiko.tanaka@nebula.studio` and that password to confirm it's working.
 
 Both services expose a container `HEALTHCHECK`; `docker compose ps` shows
 `healthy` once each is actually serving traffic, not just running.

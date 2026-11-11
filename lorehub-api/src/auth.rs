@@ -92,6 +92,14 @@ fn cookies_secure() -> bool {
     })
 }
 
+/// `true` when the operator opted into local plain-`http://` development
+/// (`LOREHUB_INSECURE_COOKIES=true`). Used to decide whether the well-known
+/// demo password is acceptable (see `state::choose_demo_password`): it is
+/// only acceptable on a developer's own machine, never on a deployment.
+pub fn local_dev_mode() -> bool {
+    !cookies_secure()
+}
+
 /// Builds a single `Set-Cookie` value. Pulled out of the four public
 /// builders below and parameterized on `secure` (rather than reaching for
 /// [`cookies_secure`] itself) so unit tests can exercise both the

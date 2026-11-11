@@ -211,7 +211,53 @@ pub fn demo_repositories() -> Vec<Repository> {
     ]
 }
 
+/// The well-known demo password. Only used for tests and for local
+/// development (`LOREHUB_INSECURE_COOKIES=true`); a deployment never gets it
+/// (see [`choose_demo_password`]) because it is written in the public docs.
+pub const LOCAL_DEMO_PASSWORD: &str = "lorehub";
+
+/// Where the demo accounts' password came from.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DemoPasswordSource {
+    /// `LOREHUB_DEMO_PASSWORD` was set by the operator.
+    Configured,
+    /// Local development: the well-known password.
+    LocalDefault,
+    /// A deployment with nothing configured: a random one-time password.
+    Generated,
+}
+
+/// Picks the password every seeded demo account shares on a fresh database.
+///
+/// The seed creates an Owner account, and the old fixed password was printed
+/// in the public docs — so a fresh deployment would have let anyone in as the
+/// owner. Now: an explicit `LOREHUB_DEMO_PASSWORD` wins (at least 8
+/// characters, or startup fails); otherwise local development keeps the
+/// well-known one; otherwise a random password is generated for this boot.
+/// `generate` is injected so the choice is testable.
+pub fn choose_demo_password(
+    configured: Option<&str>,
+    local_dev: bool,
+    generate: impl FnOnce() -> String,
+) -> Result<(String, DemoPasswordSource), String> {
+    if let Some(value) = configured.map(str::trim).filter(|v| !v.is_empty()) {
+        if value.chars().count() < 8 {
+            return Err("LOREHUB_DEMO_PASSWORD must be at least 8 characters".to_string());
+        }
+        return Ok((value.to_string(), DemoPasswordSource::Configured));
+    }
+    if local_dev {
+        return Ok((LOCAL_DEMO_PASSWORD.to_string(), DemoPasswordSource::LocalDefault));
+    }
+    Ok((generate(), DemoPasswordSource::Generated))
+}
+
+#[cfg(test)]
 pub fn seed() -> AppState {
+    seed_with_password(LOCAL_DEMO_PASSWORD)
+}
+
+pub fn seed_with_password(demo_password: &str) -> AppState {
     let pull_requests = vec![
         PullRequest {
             id: "42".into(),
@@ -498,7 +544,7 @@ pub fn seed() -> AppState {
         generate_theme_wav(),
     );
 
-    let demo_password_hash = auth::hash_password("lorehub");
+    let demo_password_hash = auth::hash_password(demo_password);
     let credentials = org_members
         .iter()
         .map(|m| (m.email.clone(), demo_password_hash.clone()))
@@ -563,4 +609,52 @@ fn generate_theme_wav() -> Vec<u8> {
         wav.extend_from_slice(&sample.to_le_bytes());
     }
     wav
+}
+
+#[cfg(test)]
+mod demo_password_tests {
+    use super::*;
+
+    fn make_pw() -> String {
+        "generated-value".to_string()
+    }
+
+    #[test]
+    fn a_deployment_never_gets_the_well_known_password() {
+        let (pw, source) = choose_demo_password(None, false, make_pw).unwrap();
+        assert_eq!(source, DemoPasswordSource::Generated);
+        assert_eq!(pw, "generated-value");
+        assert_ne!(pw, LOCAL_DEMO_PASSWORD);
+    }
+
+    #[test]
+    fn local_development_keeps_the_well_known_password() {
+        let (pw, source) = choose_demo_password(None, true, make_pw).unwrap();
+        assert_eq!((pw.as_str(), source), (LOCAL_DEMO_PASSWORD, DemoPasswordSource::LocalDefault));
+    }
+
+    #[test]
+    fn an_explicit_password_wins_in_both_modes() {
+        for local_dev in [false, true] {
+            let (pw, source) = choose_demo_password(Some("  correct-horse  "), local_dev, make_pw).unwrap();
+            assert_eq!((pw.as_str(), source), ("correct-horse", DemoPasswordSource::Configured));
+        }
+    }
+
+    #[test]
+    fn a_blank_value_counts_as_unset_and_a_short_one_fails_startup() {
+        let (_, source) = choose_demo_password(Some("   "), false, make_pw).unwrap();
+        assert_eq!(source, DemoPasswordSource::Generated);
+        assert!(choose_demo_password(Some("short"), false, make_pw).is_err());
+    }
+
+    #[test]
+    fn the_seed_uses_the_chosen_password_for_every_account() {
+        let state = seed_with_password("not-the-demo-one");
+        assert!(!state.credentials.is_empty());
+        for hash in state.credentials.values() {
+            assert!(auth::verify_password("not-the-demo-one", hash));
+            assert!(!auth::verify_password(LOCAL_DEMO_PASSWORD, hash));
+        }
+    }
 }

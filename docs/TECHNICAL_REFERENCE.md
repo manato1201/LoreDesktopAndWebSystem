@@ -245,7 +245,7 @@ VCS再設計フェーズ5で追加。既存の `PullRequest.changed_files`/`PrDi
 
 ## 4. 認証・セッションの実装詳細
 
-- パスワードは argon2 でハッシュ化。デモアカウントは全員パスワード `"lorehub"` 共通(`state.rs` コメント参照)。
+- パスワードは argon2 でハッシュ化。デモアカウントは全員同じパスワード。**ローカル開発(`LOREHUB_INSECURE_COOKIES=true`)だけ公開の `"lorehub"`**、`LOREHUB_DEMO_PASSWORD`(8 文字以上)を指定すればその値、**それ以外(本番)は空の DB の初回起動でランダムな 1 回限りのパスワードを作り、ログに 1 度だけ出す**(`state::choose_demo_password`。シードはオーナーを含むので、公開のパスワードを本番に持ち込まない)。既存の DB は変わらない。
 - ログイン成功時、2つのCookieを発行: `lorehub_token`(アクセストークン、`Max-Age=1800`=30分)と `lorehub_refresh`(リフレッシュトークン、`Max-Age=604800`=7日)。両方とも `HttpOnly; SameSite=Lax`。
 - サーバー側は `AppState.sessions`/`refresh_tokens: HashMap<token, SessionEntry{email, expires_at}>` で有効期限を管理。`require_auth` はアクセストークンの `expires_at` を毎回チェックし、期限切れなら失効エントリを削除して401を返す。
 - `POST /api/auth/refresh` はリフレッシュトークンを検証し、**ローテーション**(古いリフレッシュトークンを破棄し新しいアクセス+リフレッシュ両方を再発行)する。古いリフレッシュトークンの再利用は401になる(盗用されたトークンの使い回しを防ぐ標準的な対策)。
