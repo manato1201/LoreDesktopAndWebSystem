@@ -175,7 +175,7 @@ export function AudioPlayer({ src }: { src: string }) {
               })}
             </svg>
           ) : (
-            <div className="h-full animate-pulse rounded-standard bg-surface" />
+            <div className="h-full animate-pulse rounded-standard bg-surface motion-reduce:animate-none" />
           )}
         </div>
 
